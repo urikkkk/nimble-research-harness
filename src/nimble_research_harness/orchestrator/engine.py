@@ -26,7 +26,7 @@ from ..infra.events import EventStream
 from ..infra.hooks import HookContext, HookDecision, HookRegistry, build_hooks
 from ..infra.logging import get_logger
 from ..models.discovery import AgentFitScore
-from ..models.enums import ExecutionMode, ExecutionStage
+from ..models.enums import ExecutionMode, ExecutionStage, TimeBudget
 from ..models.output import ResearchReport, SessionSummary
 from ..models.session import SessionConfig, UserResearchRequest
 from ..nimble.provider import NimbleProvider
@@ -59,7 +59,13 @@ async def run_research(
 
     # --- Stage 1: Intake ---
     config = normalize_request(request)
-    fast_mode = request.fast_mode
+    fast_mode = request.fast_mode or request.time_budget in (
+        TimeBudget.QUICK_30S,
+        TimeBudget.SHORT_2M,
+        TimeBudget.MEDIUM_5M,
+    )
+    if fast_mode:
+        logger.info("fast_mode_enabled", budget=request.time_budget.value)
     ctx = RunContext(session_id=config.session_id, storage=storage)
     set_context(ctx)
 
@@ -138,9 +144,10 @@ async def run_research(
         if monitor.is_over_budget:
             raise AgentTimeoutError("skill_gen", int(monitor.elapsed_seconds * 1000))
 
+        skill_timeout = max(30, monitor.remaining_seconds * 0.15) if fast_mode else max(90, monitor.remaining_seconds * 0.4)
         skill = await asyncio.wait_for(
             build_skill(config, fast_mode=fast_mode),
-            timeout=max(60, monitor.remaining_seconds * 0.3),
+            timeout=skill_timeout,
         )
         logger.info("skill_generated", title=skill.title, subquestions=len(skill.subquestions))
         await monitor.create_checkpoint(ExecutionStage.SKILL_GEN, 2)
@@ -171,9 +178,10 @@ async def run_research(
         if monitor.is_over_budget:
             raise AgentTimeoutError("planning", int(monitor.elapsed_seconds * 1000))
 
+        plan_timeout = max(30, monitor.remaining_seconds * 0.15) if fast_mode else max(90, monitor.remaining_seconds * 0.4)
         plan = await asyncio.wait_for(
             create_plan(config, skill, wsa_matches, fast_mode=fast_mode),
-            timeout=max(60, monitor.remaining_seconds * 0.3),
+            timeout=plan_timeout,
         )
         await storage.save_plan(plan)
         logger.info("plan_created", steps=plan.total_steps)
@@ -196,9 +204,10 @@ async def run_research(
         if monitor.is_over_budget:
             raise AgentTimeoutError("research", int(monitor.elapsed_seconds * 1000))
 
+        research_pct = 0.7 if fast_mode else 0.6
         research_result = await asyncio.wait_for(
             execute_research(config, plan, registry),
-            timeout=max(10, monitor.remaining_seconds * 0.6),
+            timeout=max(30, monitor.remaining_seconds * research_pct),
         )
         evidence = await storage.get_evidence(session_id_str)
 
@@ -267,9 +276,10 @@ async def run_research(
         if monitor.is_over_budget:
             raise AgentTimeoutError("analysis", int(monitor.elapsed_seconds * 1000))
 
+        analysis_pct = 0.8 if fast_mode else 0.7
         await asyncio.wait_for(
             analyze_and_report(config, skill, registry, fast_mode=fast_mode),
-            timeout=max(60, monitor.remaining_seconds * 0.7),
+            timeout=max(60, monitor.remaining_seconds * analysis_pct),
         )
         claims = await storage.get_claims(session_id_str)
         logger.info("analysis_complete", claims=len(claims))
