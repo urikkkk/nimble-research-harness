@@ -91,7 +91,7 @@ class MockNimbleProvider:
         )
 
     async def list_agents(
-        self, query: Optional[str] = None, limit: int = 100
+        self, query: Optional[str] = None, limit: int = 100, offset: int = 0
     ) -> list[AgentSummary]:
         self._log("list_agents", query=query)
         agents = [

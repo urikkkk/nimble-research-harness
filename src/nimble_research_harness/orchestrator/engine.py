@@ -139,7 +139,7 @@ async def run_research(
 
         skill = await asyncio.wait_for(
             build_skill(config),
-            timeout=min(30, monitor.remaining_seconds),
+            timeout=max(60, monitor.remaining_seconds * 0.3),
         )
         logger.info("skill_generated", title=skill.title, subquestions=len(skill.subquestions))
         await monitor.create_checkpoint(ExecutionStage.SKILL_GEN, 2)
@@ -172,7 +172,7 @@ async def run_research(
 
         plan = await asyncio.wait_for(
             create_plan(config, skill, wsa_matches),
-            timeout=min(30, monitor.remaining_seconds),
+            timeout=max(60, monitor.remaining_seconds * 0.3),
         )
         await storage.save_plan(plan)
         logger.info("plan_created", steps=plan.total_steps)
@@ -268,7 +268,7 @@ async def run_research(
 
         await asyncio.wait_for(
             analyze_and_report(config, skill, registry),
-            timeout=max(15, monitor.remaining_seconds * 0.7),
+            timeout=max(60, monitor.remaining_seconds * 0.7),
         )
         claims = await storage.get_claims(session_id_str)
         logger.info("analysis_complete", claims=len(claims))
