@@ -59,6 +59,7 @@ async def run_research(
 
     # --- Stage 1: Intake ---
     config = normalize_request(request)
+    fast_mode = request.fast_mode
     ctx = RunContext(session_id=config.session_id, storage=storage)
     set_context(ctx)
 
@@ -138,7 +139,7 @@ async def run_research(
             raise AgentTimeoutError("skill_gen", int(monitor.elapsed_seconds * 1000))
 
         skill = await asyncio.wait_for(
-            build_skill(config),
+            build_skill(config, fast_mode=fast_mode),
             timeout=max(60, monitor.remaining_seconds * 0.3),
         )
         logger.info("skill_generated", title=skill.title, subquestions=len(skill.subquestions))
@@ -171,7 +172,7 @@ async def run_research(
             raise AgentTimeoutError("planning", int(monitor.elapsed_seconds * 1000))
 
         plan = await asyncio.wait_for(
-            create_plan(config, skill, wsa_matches),
+            create_plan(config, skill, wsa_matches, fast_mode=fast_mode),
             timeout=max(60, monitor.remaining_seconds * 0.3),
         )
         await storage.save_plan(plan)
@@ -267,7 +268,7 @@ async def run_research(
             raise AgentTimeoutError("analysis", int(monitor.elapsed_seconds * 1000))
 
         await asyncio.wait_for(
-            analyze_and_report(config, skill, registry),
+            analyze_and_report(config, skill, registry, fast_mode=fast_mode),
             timeout=max(60, monitor.remaining_seconds * 0.7),
         )
         claims = await storage.get_claims(session_id_str)
@@ -297,7 +298,7 @@ async def run_research(
                 await event_stream.stage_entered("verification", monitor.elapsed_seconds)
             try:
                 await asyncio.wait_for(
-                    verify_claims(config, registry),
+                    verify_claims(config, registry, fast_mode=fast_mode),
                     timeout=max(10, monitor.remaining_seconds * 0.5),
                 )
             except asyncio.TimeoutError:

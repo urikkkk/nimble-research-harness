@@ -11,7 +11,7 @@ from ..models.enums import ExecutionMode, ToolName
 from ..models.plan import PlanStep, ResearchPlan
 from ..models.skill import DynamicSkillSpec
 from ..models.session import SessionConfig
-from .base import run_agent_loop
+from .base import FAST_MODEL, run_agent_loop
 from ..tools.registry import ToolDefinition, ToolRegistry
 
 SYSTEM_PROMPT = """You are a research execution planner. Given a research skill spec with its objective,
@@ -24,12 +24,15 @@ Your plan should:
 4. Include verification searches for important claims
 5. Stay within the time budget constraints
 
-Available tools for research steps:
-- nimble_search: Web search with focus modes
-- nimble_extract: Extract content from specific URLs
-- nimble_map: Discover URLs on a website
-- nimble_crawl_run: Deep crawl of a website section
-- nimble_agents_run: Run a pre-built WSA agent for structured extraction
+Available tools for research steps (use exact param names):
+- nimble_search: params must include "query" (single string), optional "focus" and "max_results"
+- nimble_extract: params must include "url" (single string URL)
+- nimble_map: params must include "url" (single string URL)
+- nimble_crawl_run: params must include "url" (single string URL)
+- nimble_agents_run: params must include "agent_name" and tool-specific params
+
+IMPORTANT: Each step's params must use singular "query" (not "queries") and "url" (not "urls").
+Each step handles ONE query or ONE url.
 
 Always call `submit_plan` with your complete plan."""
 
@@ -40,6 +43,7 @@ async def create_plan(
     config: SessionConfig,
     skill: DynamicSkillSpec,
     wsa_matches: list[AgentFitScore],
+    fast_mode: bool = False,
 ) -> ResearchPlan:
     """Generate an execution plan from a skill spec."""
     global _plan_result
@@ -134,12 +138,16 @@ Max crawl pages: {config.policy.max_crawl_pages}
 
 Call `submit_plan` with ordered steps."""
 
+    kwargs = {}
+    if fast_mode:
+        kwargs["model"] = FAST_MODEL
     await run_agent_loop(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
         registry=registry,
         tool_names=["submit_plan"],
         max_turns=3,
+        **kwargs,
     )
 
     if _plan_result is None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from ..models.session import SessionConfig
 from ..models.skill import DynamicSkillSpec
 from ..tools.registry import ToolRegistry
-from .base import run_agent_loop
+from .base import FAST_MODEL, run_agent_loop
 
 SYSTEM_PROMPT = """You are a research analyst. You have access to collected evidence from web research.
 Your job is to:
@@ -35,6 +35,7 @@ async def analyze_and_report(
     config: SessionConfig,
     skill: DynamicSkillSpec,
     registry: ToolRegistry,
+    fast_mode: bool = False,
 ) -> str:
     """Synthesize evidence into claims and produce a report."""
     user_prompt = f"""Analyze the collected research evidence and produce a report.
@@ -52,11 +53,15 @@ Steps:
 Focus on answering the research objective with cited evidence."""
 
     tool_names = ["read_evidence", "write_claim", "write_report"]
+    kwargs = {}
+    if fast_mode:
+        kwargs["model"] = FAST_MODEL
     result = await run_agent_loop(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
         registry=registry,
         tool_names=tool_names,
         max_turns=15,
+        **kwargs,
     )
     return result.text
