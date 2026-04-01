@@ -9,7 +9,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from .enums import ExecutionMode, ExecutionStage, ReportFormat, TimeBudget
-from .evidence import Claim, EvidenceItem, VerificationResult
+from .evidence import Claim, EvidenceItem, FieldBasis, VerificationResult
 
 
 class ResearchReport(BaseModel):
@@ -30,6 +30,17 @@ class ResearchReport(BaseModel):
     sources: list[dict[str, Any]] = Field(default_factory=list)
     known_unknowns: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+
+    # New: per-field provenance (inspired by Parallel AI research basis)
+    field_basis: list[FieldBasis] = Field(
+        default_factory=list,
+        description="Per-field citations, reasoning, and confidence",
+    )
+    # New: structured output conforming to user-provided JSON schema
+    structured_output: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Schema-conformant structured output if output_schema was provided",
+    )
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

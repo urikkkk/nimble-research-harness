@@ -26,7 +26,7 @@ from .skill import (
 )
 from .plan import PlanStep, ResearchPlan
 from .execution import RunCheckpoint, ToolCallRecord
-from .evidence import Claim, EvidenceItem, VerificationResult
+from .evidence import Citation, Claim, EvidenceItem, FieldBasis, VerificationResult
 from .discovery import AgentFitScore, WSACandidate
 from .output import ResearchReport, SessionSummary
 
@@ -58,8 +58,10 @@ __all__ = [
     "ResearchPlan",
     "RunCheckpoint",
     "ToolCallRecord",
+    "Citation",
     "Claim",
     "EvidenceItem",
+    "FieldBasis",
     "VerificationResult",
     "AgentFitScore",
     "WSACandidate",
