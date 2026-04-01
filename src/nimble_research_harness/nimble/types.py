@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+_VALID_FOCUS = {"general", "news", "coding", "academic", "shopping", "social", "geo", "location"}
+_VALID_DEPTH = {"lite", "fast", "deep"}
 
 
 # --- Search ---
@@ -14,6 +18,20 @@ class SearchParams(BaseModel):
     max_results: int = Field(default=10, ge=1, le=100)
     search_depth: str = Field(default="lite")
     focus: str = Field(default="general")
+
+    @field_validator("focus", mode="before")
+    @classmethod
+    def _sanitize_focus(cls, v: Any) -> str:
+        if isinstance(v, str) and v.lower().strip() in _VALID_FOCUS:
+            return v.lower().strip()
+        return "general"
+
+    @field_validator("search_depth", mode="before")
+    @classmethod
+    def _sanitize_depth(cls, v: Any) -> str:
+        if isinstance(v, str) and v.lower().strip() in _VALID_DEPTH:
+            return v.lower().strip()
+        return "lite"
     include_answer: bool = False
     include_domains: list[str] = Field(default_factory=list)
     exclude_domains: list[str] = Field(default_factory=list)

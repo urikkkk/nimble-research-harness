@@ -19,6 +19,20 @@ from ..nimble.types import (
 )
 from .registry import ToolDefinition, ToolRegistry
 
+_VALID_FOCUS = {"general", "news", "coding", "academic", "shopping", "social", "geo", "location"}
+
+_MIN_CONTENT_LENGTH = 50  # Below this, extraction likely returned a JS shell
+
+
+def _ensure_list(val: Any) -> list[str]:
+    """Coerce a string to a list; split on newlines if present."""
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        items = [line.strip().lstrip("- ").lstrip("* ") for line in val.split("\n") if line.strip()]
+        return items if items else [val]
+    return []
+
 
 def build_registry(provider: NimbleProvider) -> ToolRegistry:
     """Create a ToolRegistry with all Nimble tool definitions wired to the provider."""
@@ -28,6 +42,8 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
     async def handle_search(params: dict[str, Any]) -> dict[str, Any]:
         start = time.time()
         ctx = get_context()
+        if params.get("focus", "general") not in _VALID_FOCUS:
+            params["focus"] = "general"
         search_params = SearchParams(**params)
         resp = await provider.search(search_params)
         latency = int((time.time() - start) * 1000)
@@ -92,24 +108,34 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
     async def handle_extract(params: dict[str, Any]) -> dict[str, Any]:
         start = time.time()
         ctx = get_context()
+
         extract_params = ExtractParams(**params)
         resp = await provider.extract(extract_params)
-        latency = int((time.time() - start) * 1000)
-
         content = resp.markdown or resp.html or ""
+
+        # If content is too short, retry with JS rendering enabled
+        if len(content.strip()) < _MIN_CONTENT_LENGTH and not extract_params.render:
+            params["render"] = True
+            retry_params = ExtractParams(**params)
+            resp = await provider.extract(retry_params)
+            content = resp.markdown or resp.html or ""
+
+        latency = int((time.time() - start) * 1000)
+        content_is_substantive = len(content.strip()) >= _MIN_CONTENT_LENGTH
+
         await ctx.storage.insert_tool_call(
             ToolCallRecord(
                 session_id=ctx.session_id,
                 tool=ToolName.EXTRACT,
                 params=params,
-                status=ToolCallStatus.SUCCESS,
-                response_summary=f"Extracted {len(content)} chars",
-                result_count=1 if content else 0,
+                status=ToolCallStatus.SUCCESS if content_is_substantive else ToolCallStatus.PARTIAL,
+                response_summary=f"Extracted {len(content)} chars" if content_is_substantive else "Empty/minimal content",
+                result_count=1 if content_is_substantive else 0,
                 latency_ms=latency,
             )
         )
 
-        if content:
+        if content_is_substantive:
             await ctx.storage.insert_evidence(
                 EvidenceItem(
                     session_id=ctx.session_id,
@@ -395,11 +421,11 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
             session_id=ctx.session_id,
             title=params.get("title", "Research Report"),
             executive_summary=params.get("executive_summary", ""),
-            key_findings=params.get("key_findings", []),
+            key_findings=_ensure_list(params.get("key_findings", [])),
             detailed_analysis=params.get("detailed_analysis", ""),
             methodology=params.get("methodology", ""),
-            known_unknowns=params.get("known_unknowns", []),
-            limitations=params.get("limitations", []),
+            known_unknowns=_ensure_list(params.get("known_unknowns", [])),
+            limitations=_ensure_list(params.get("limitations", [])),
         )
         await ctx.storage.save_report(report)
         return {"report_id": str(report.report_id), "status": "ok"}
