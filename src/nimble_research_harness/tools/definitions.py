@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from typing import Any
@@ -23,14 +24,22 @@ _VALID_FOCUS = {"general", "news", "coding", "academic", "shopping", "social", "
 
 _MIN_CONTENT_LENGTH = 50  # Below this, extraction likely returned a JS shell
 
+_TAG_RE = re.compile(r"</?(?:item|parameter|result|entry|price|product)[^>]*>", re.IGNORECASE)
+
+
+def _strip_tags(text: str) -> str:
+    """Remove common XML/HTML wrapper tags that LLMs inject into content."""
+    return _TAG_RE.sub("", text).strip()
+
 
 def _ensure_list(val: Any) -> list[str]:
-    """Coerce a string to a list; split on newlines if present."""
+    """Coerce a string to a list; split on newlines if present. Strip XML tags."""
     if isinstance(val, list):
-        return val
+        return [_strip_tags(v) if isinstance(v, str) else v for v in val]
     if isinstance(val, str):
-        items = [line.strip().lstrip("- ").lstrip("* ") for line in val.split("\n") if line.strip()]
-        return items if items else [val]
+        cleaned = _strip_tags(val)
+        items = [line.strip().lstrip("- ").lstrip("* ") for line in cleaned.split("\n") if line.strip()]
+        return items if items else [cleaned]
     return []
 
 
@@ -352,7 +361,7 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
                 "id": str(e.evidence_id),
                 "url": e.source_url,
                 "title": e.title,
-                "content": e.content[:500],
+                "content": _strip_tags(e.content[:2000]),
                 "type": e.content_type,
                 "relevance": e.relevance_score,
             }

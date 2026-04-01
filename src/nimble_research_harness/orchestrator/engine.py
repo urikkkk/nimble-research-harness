@@ -234,7 +234,12 @@ async def run_research(
             await event_stream.budget_warning(100 - monitor.budget_utilization_pct)
 
         # --- Stage 6: Extraction (optional deep extract) ---
-        if not monitor.should_skip_stage(ExecutionStage.EXTRACTION):
+        # Skip extraction if search already yielded rich evidence
+        skip_extraction = len(evidence) >= 80 and fast_mode
+        if skip_extraction:
+            logger.info("extraction_skipped", reason="sufficient_search_evidence", evidence_count=len(evidence))
+
+        if not skip_extraction and not monitor.should_skip_stage(ExecutionStage.EXTRACTION):
             monitor.set_stage(ExecutionStage.EXTRACTION)
             if event_stream:
                 await event_stream.stage_entered("extraction", monitor.elapsed_seconds)

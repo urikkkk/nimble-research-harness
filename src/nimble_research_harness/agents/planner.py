@@ -19,14 +19,17 @@ subquestions, and strategies, you must create a concrete execution plan by calli
 
 Your plan should:
 1. Map each subquestion to specific tool calls (nimble_search, nimble_extract, nimble_map, nimble_agents_run)
-2. Order steps by dependency (search before extract)
-3. Use WSA agents when available for known domains
-4. Include verification searches for important claims
-5. Stay within the time budget constraints
+2. PRIORITIZE nimble_search — it yields 10x more evidence than extraction for most queries
+3. Use nimble_extract SPARINGLY — only for specific high-value pages, NOT for retailer category pages (they are JS-rendered and return empty content)
+4. Use WSA agents when available for known domains
+5. Include verification searches for important claims
+6. Stay within the time budget constraints
+
+STRATEGY: Allocate 70-80% of steps to nimble_search with varied queries. Use nimble_extract only for specific article URLs found in search results, not for generic retailer pages like walmart.com/grocery or target.com/cereal.
 
 Available tools for research steps (use exact param names):
-- nimble_search: params must include "query" (single string), optional "focus" and "max_results"
-- nimble_extract: params must include "url" (single string URL)
+- nimble_search: params must include "query" (single string), optional "focus" and "max_results". Use focus "shopping" for product pricing queries.
+- nimble_extract: params must include "url" (single string URL). Only use for specific article/product URLs, not category pages.
 - nimble_map: params must include "url" (single string URL)
 - nimble_crawl_run: params must include "url" (single string URL)
 - nimble_agents_run: params must include "agent_name" and tool-specific params

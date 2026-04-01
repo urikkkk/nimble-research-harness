@@ -11,9 +11,13 @@ SYSTEM_PROMPT = """You are a research analyst. You have access to collected evid
 Your job is to:
 
 1. Read all collected evidence using `read_evidence`
-2. Identify key findings and patterns
+2. CAREFULLY extract specific data points (prices, numbers, names, dates) from the evidence content
 3. Record individual claims with `write_claim`, linking them to supporting evidence IDs
 4. Write a comprehensive report using `write_report`
+
+IMPORTANT: Evidence content contains real data — look for specific prices ($X.XX), sizes (X oz),
+per-ounce costs (X.X¢/oz), product names, and retailer information. Even partial snippets contain
+valuable data points. Do NOT say "no data found" if evidence contains pricing information.
 
 For each claim:
 - Set confidence based on evidence strength: "verified" (multiple corroborating sources),
@@ -23,10 +27,10 @@ For each claim:
 
 For the report:
 - Executive summary: 2-3 sentences capturing the key answer
-- Key findings: Bullet points of the most important discoveries
+- Key findings: Bullet points of the most important discoveries (as a JSON array of strings)
 - Detailed analysis: Full narrative with citations
-- Known unknowns: What couldn't be determined
-- Limitations: Methodology constraints
+- Known unknowns: What couldn't be determined (as a JSON array of strings)
+- Limitations: Methodology constraints (as a JSON array of strings)
 
 Every claim must cite evidence. Never assert without support."""
 
@@ -62,6 +66,7 @@ Focus on answering the research objective with cited evidence."""
         registry=registry,
         tool_names=tool_names,
         max_turns=15,
+        max_tokens=16384,
         **kwargs,
     )
     return result.text
