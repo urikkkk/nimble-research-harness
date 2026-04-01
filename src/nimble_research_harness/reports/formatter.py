@@ -59,6 +59,25 @@ def _format_full(report: ResearchReport) -> str:
     if report.methodology:
         lines.extend(["", "## Methodology", report.methodology])
 
+    if report.field_basis:
+        lines.extend(["", "## Research Basis"])
+        for fb in report.field_basis:
+            conf = fb.confidence.value.replace("_", " ").title()
+            lines.append(f"\n### {fb.field} [{conf}]")
+            if fb.reasoning:
+                lines.append(f"  {fb.reasoning}")
+            for cit in fb.citations:
+                title = cit.title or cit.url
+                lines.append(f"  - [{title}]({cit.url})")
+                for excerpt in cit.excerpts[:2]:
+                    lines.append(f"    > {excerpt[:200]}")
+
+    if report.structured_output:
+        lines.extend(["", "## Structured Output", "```json"])
+        import json
+        lines.append(json.dumps(report.structured_output, indent=2, default=str))
+        lines.append("```")
+
     return "\n".join(lines)
 
 

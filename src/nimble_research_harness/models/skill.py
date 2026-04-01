@@ -39,6 +39,13 @@ class SourcePolicy(BaseModel):
     preferred_focus_modes: list[SearchFocus] = Field(
         default_factory=lambda: [SearchFocus.GENERAL]
     )
+    # Enhanced: Parallel AI-inspired domain controls
+    preferred_domains: list[str] = Field(
+        default_factory=list, description="Domains weighted higher in ranking"
+    )
+    disallowed_domains: list[str] = Field(
+        default_factory=list, description="Domains hard-blocked from all tool calls"
+    )
 
 
 class ExtractionPolicy(BaseModel):
@@ -66,6 +73,10 @@ class VerificationPolicy(BaseModel):
     require_corroboration: bool = False
     flag_contradictions: bool = True
     max_verification_searches: int = Field(default=5, ge=0)
+    confidence_threshold: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description="Findings below this threshold get flagged, not included",
+    )
 
 
 class ReportPolicy(BaseModel):
@@ -141,6 +152,9 @@ class DynamicSkillSpec(BaseModel):
     )
     execution_mode: ExecutionMode = Field(default=ExecutionMode.HYBRID)
     deliverables: list[str] = Field(default_factory=lambda: ["research_report"])
+    output_schema: Optional[dict] = Field(
+        default=None, description="User-provided JSON schema for structured output"
+    )
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

@@ -142,6 +142,24 @@ class UserResearchRequest(BaseModel):
     context_hints: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+    # New fields inspired by Parallel AI
+    output_schema: Optional[dict] = Field(
+        default=None, description="Optional JSON schema for structured output"
+    )
+    source_policy: Optional[dict] = Field(
+        default=None,
+        description="Source policy with preferred_domains/disallowed_domains",
+    )
+    metadata: dict[str, str] = Field(
+        default_factory=dict, description="User-provided tracking metadata"
+    )
+    previous_session_id: Optional[str] = Field(
+        default=None, description="For follow-up research (context chaining)"
+    )
+    fast_mode: bool = Field(
+        default=False, description="Trade freshness for speed (cached results OK)"
+    )
+
     @field_validator("user_query")
     @classmethod
     def query_not_empty(cls, v: str) -> str:

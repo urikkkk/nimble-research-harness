@@ -1,4 +1,11 @@
-"""Main orchestrator engine — 10-stage research pipeline."""
+"""Main orchestrator engine — enhanced 13-stage research pipeline.
+
+Enhancements inspired by Parallel AI Task API and Claude Code architecture:
+- Hook system for budget/domain/rate enforcement
+- SSE event streaming for real-time progress
+- Interactive gates at critical decision points
+- Per-field provenance (FieldBasis) on report outputs
+"""
 
 from __future__ import annotations
 
@@ -15,6 +22,8 @@ from ..agents.skill_builder import build_skill
 from ..agents.verifier import verify_claims
 from ..infra.context import RunContext, get_context, set_context
 from ..infra.errors import AgentAbortError, AgentTimeoutError
+from ..infra.events import EventStream
+from ..infra.hooks import HookContext, HookDecision, HookRegistry, build_hooks
 from ..infra.logging import get_logger
 from ..models.discovery import AgentFitScore
 from ..models.enums import ExecutionMode, ExecutionStage
@@ -26,6 +35,7 @@ from ..storage.backend import StorageBackend
 from ..tools.definitions import build_registry
 from ..wsa.catalog import WSACatalog
 from ..wsa.strategy import ExecutionStrategy
+from .gates import GateDecision, GateRegistry, GateResult
 
 logger = get_logger(__name__)
 
@@ -35,8 +45,12 @@ async def run_research(
     provider: NimbleProvider,
     storage: StorageBackend,
     resume_session_id: Optional[str] = None,
+    gate_registry: Optional[GateRegistry] = None,
+    event_stream: Optional[EventStream] = None,
 ) -> SessionSummary:
-    """Execute the full 10-stage research pipeline."""
+    """Execute the full research pipeline with hooks, events, and gates."""
+
+    gates = gate_registry or GateRegistry()
 
     # --- Stage 0: Discovery ---
     catalog = WSACatalog(provider)
@@ -50,6 +64,28 @@ async def run_research(
 
     monitor = BudgetMonitor(config)
     monitor.set_stage(ExecutionStage.INTAKE)
+
+    if event_stream:
+        await event_stream.session_started(
+            query=config.user_query,
+            budget=config.time_budget.label,
+        )
+
+    # Build hook registry with source policy from request
+    disallowed = []
+    preferred = []
+    if request.source_policy:
+        disallowed = request.source_policy.get("disallowed_domains", [])
+        preferred = request.source_policy.get("preferred_domains", [])
+
+    hooks = build_hooks(
+        wall_clock_limit=config.policy.stop_conditions.wall_clock_seconds,
+        start_time=monitor.start_time,
+        disallowed_domains=disallowed or None,
+        preferred_domains=preferred or None,
+        max_content_length=config.policy.stop_conditions.wall_clock_seconds * 30,
+        max_concurrent=config.policy.concurrency_limit,
+    )
 
     # Handle resume
     if resume_session_id:
@@ -72,6 +108,9 @@ async def run_research(
     try:
         # --- Stage 0b: WSA Strategy ---
         monitor.set_stage(ExecutionStage.DISCOVERY)
+        if event_stream:
+            await event_stream.stage_entered("discovery", monitor.elapsed_seconds)
+
         if config.execution_mode != ExecutionMode.RAW_TOOLS:
             strategy = ExecutionStrategy(catalog)
             mode, wsa_matches = await strategy.resolve(
@@ -92,6 +131,9 @@ async def run_research(
 
         # --- Stage 2: Skill Generation ---
         monitor.set_stage(ExecutionStage.SKILL_GEN)
+        if event_stream:
+            await event_stream.stage_entered("skill_gen", monitor.elapsed_seconds)
+
         if monitor.is_over_budget:
             raise AgentTimeoutError("skill_gen", int(monitor.elapsed_seconds * 1000))
 
@@ -102,14 +144,29 @@ async def run_research(
         logger.info("skill_generated", title=skill.title, subquestions=len(skill.subquestions))
         await monitor.create_checkpoint(ExecutionStage.SKILL_GEN, 2)
 
+        # --- Gate: Skill Approval ---
+        gate_result = await gates.check(
+            "skill_gen",
+            f"Generated skill: {skill.title} with {len(skill.subquestions)} sub-questions",
+            skill.model_dump(mode="json"),
+        )
+        if gate_result.decision == GateDecision.ABORT:
+            raise AgentAbortError(f"Skill generation aborted: {gate_result.feedback}")
+
         # --- Stage 3: Deployment ---
         monitor.set_stage(ExecutionStage.DEPLOYMENT)
+        if event_stream:
+            await event_stream.stage_entered("deployment", monitor.elapsed_seconds)
+
         deployment = await deploy_skill(skill)
         logger.info("skill_deployed", deployment_id=str(deployment.deployment_id))
         await monitor.create_checkpoint(ExecutionStage.DEPLOYMENT, 3)
 
         # --- Stage 4: Planning ---
         monitor.set_stage(ExecutionStage.PLANNING)
+        if event_stream:
+            await event_stream.stage_entered("planning", monitor.elapsed_seconds)
+
         if monitor.is_over_budget:
             raise AgentTimeoutError("planning", int(monitor.elapsed_seconds * 1000))
 
@@ -121,8 +178,20 @@ async def run_research(
         logger.info("plan_created", steps=plan.total_steps)
         await monitor.create_checkpoint(ExecutionStage.PLANNING, 4, total_steps=plan.total_steps)
 
+        # --- Gate: Plan Approval ---
+        gate_result = await gates.check(
+            "planning",
+            f"Research plan with {plan.total_steps} steps",
+            plan.model_dump(mode="json"),
+        )
+        if gate_result.decision == GateDecision.ABORT:
+            raise AgentAbortError(f"Planning aborted: {gate_result.feedback}")
+
         # --- Stage 5: Research ---
         monitor.set_stage(ExecutionStage.RESEARCH)
+        if event_stream:
+            await event_stream.stage_entered("research", monitor.elapsed_seconds)
+
         if monitor.is_over_budget:
             raise AgentTimeoutError("research", int(monitor.elapsed_seconds * 1000))
 
@@ -131,6 +200,11 @@ async def run_research(
             timeout=max(10, monitor.remaining_seconds * 0.6),
         )
         evidence = await storage.get_evidence(session_id_str)
+
+        if event_stream:
+            for e in evidence[-5:]:
+                await event_stream.finding_added(e.content[:200])
+
         logger.info(
             "research_complete",
             completed=research_result["completed"],
@@ -145,25 +219,50 @@ async def run_research(
             evidence_count=len(evidence),
         )
 
+        # Budget warning at 70%
+        if event_stream and monitor.budget_utilization_pct >= 70:
+            await event_stream.budget_warning(100 - monitor.budget_utilization_pct)
+
         # --- Stage 6: Extraction (optional deep extract) ---
         if not monitor.should_skip_stage(ExecutionStage.EXTRACTION):
             monitor.set_stage(ExecutionStage.EXTRACTION)
-            # Extract from priority URLs if we have budget
+            if event_stream:
+                await event_stream.stage_entered("extraction", monitor.elapsed_seconds)
+
             priority_urls = skill.extraction_strategy.priority_urls[:5]
             for url in priority_urls:
                 if monitor.is_over_budget:
                     break
+
+                # Run pre-hooks for domain filtering
+                hook_ctx = HookContext(
+                    tool_name="nimble_extract",
+                    params={"url": url},
+                    session_id=session_id_str,
+                    elapsed_seconds=monitor.elapsed_seconds,
+                    budget_remaining_seconds=monitor.remaining_seconds,
+                )
+                hook_result = await hooks.run_pre_hooks(hook_ctx)
+                if hook_result.decision == HookDecision.BLOCK:
+                    logger.info("extraction_blocked_by_hook", url=url, reason=hook_result.reason)
+                    continue
+
                 try:
                     await asyncio.wait_for(
                         registry.dispatch("nimble_extract", {"url": url}),
                         timeout=30,
                     )
+                    if event_stream:
+                        await event_stream.tool_completed("nimble_extract", f"Extracted {url}", 0)
                 except (asyncio.TimeoutError, Exception) as e:
                     logger.warning("extraction_failed", url=url, error=str(e))
             await monitor.create_checkpoint(ExecutionStage.EXTRACTION, 6)
 
         # --- Stage 7: Analysis ---
         monitor.set_stage(ExecutionStage.ANALYSIS)
+        if event_stream:
+            await event_stream.stage_entered("analysis", monitor.elapsed_seconds)
+
         if monitor.is_over_budget:
             raise AgentTimeoutError("analysis", int(monitor.elapsed_seconds * 1000))
 
@@ -177,9 +276,25 @@ async def run_research(
             ExecutionStage.ANALYSIS, 7, evidence_count=len(evidence)
         )
 
+        # --- Gate: Findings Approval ---
+        findings_summary = {
+            "claims_count": len(claims),
+            "evidence_count": len(evidence),
+            "claims": [c.model_dump(mode="json") for c in claims[:10]],
+        }
+        gate_result = await gates.check(
+            "analysis",
+            f"Analysis produced {len(claims)} claims from {len(evidence)} evidence items",
+            findings_summary,
+        )
+        if gate_result.decision == GateDecision.ABORT:
+            raise AgentAbortError(f"Analysis aborted: {gate_result.feedback}")
+
         # --- Stage 8: Verification ---
         if not monitor.should_skip_stage(ExecutionStage.VERIFICATION):
             monitor.set_stage(ExecutionStage.VERIFICATION)
+            if event_stream:
+                await event_stream.stage_entered("verification", monitor.elapsed_seconds)
             try:
                 await asyncio.wait_for(
                     verify_claims(config, registry),
@@ -191,6 +306,9 @@ async def run_research(
 
         # --- Stage 9: Reporting ---
         monitor.set_stage(ExecutionStage.REPORTING)
+        if event_stream:
+            await event_stream.stage_entered("reporting", monitor.elapsed_seconds)
+
         report = await storage.load_report(session_id_str)
         tool_calls = await storage.get_tool_calls(session_id_str)
         verifications = await storage.get_verifications(session_id_str)
@@ -219,6 +337,16 @@ async def run_research(
         await storage.save_summary(summary)
         await monitor.create_checkpoint(ExecutionStage.COMPLETED, 9)
 
+        if event_stream:
+            await event_stream.session_completed({
+                "session_id": session_id_str,
+                "elapsed": round(monitor.elapsed_seconds, 1),
+                "evidence": len(evidence),
+                "claims": len(final_claims),
+                "verified": verified_count,
+                "confidence": report.confidence_rating if report else "low",
+            })
+
         logger.info(
             "research_complete",
             session_id=session_id_str,
@@ -230,9 +358,9 @@ async def run_research(
 
         return summary
 
-    except AgentTimeoutError as e:
-        logger.warning("budget_exceeded", phase=e.phase_name)
-        # Attempt graceful completion with whatever we have
+    except (AgentTimeoutError, AgentAbortError) as e:
+        msg = e.phase_name if isinstance(e, AgentTimeoutError) else e.reason
+        logger.warning("research_stopped", reason=msg)
         evidence = await storage.get_evidence(session_id_str)
         claims = await storage.get_claims(session_id_str)
         tool_calls = await storage.get_tool_calls(session_id_str)
@@ -250,10 +378,15 @@ async def run_research(
             elapsed_seconds=monitor.elapsed_seconds,
         )
         await storage.save_summary(summary)
+
+        if event_stream:
+            await event_stream.session_failed(str(e))
+
         return summary
 
     except Exception as e:
         logger.error("research_failed", error=str(e))
+
         summary = SessionSummary(
             session_id=config.session_id,
             user_query=config.user_query,
@@ -263,4 +396,8 @@ async def run_research(
             elapsed_seconds=monitor.elapsed_seconds,
         )
         await storage.save_summary(summary)
+
+        if event_stream:
+            await event_stream.session_failed(str(e))
+
         raise
