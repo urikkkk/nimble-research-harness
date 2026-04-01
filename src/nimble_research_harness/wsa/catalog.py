@@ -45,7 +45,7 @@ class WSACatalog:
             all_agents = []
             offset = 0
             while True:
-                batch = await self.provider.list_agents(limit=100)
+                batch = await self.provider.list_agents(limit=100, offset=offset)
                 if not batch:
                     break
                 for a in batch:
