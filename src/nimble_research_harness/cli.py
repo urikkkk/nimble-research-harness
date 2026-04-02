@@ -40,9 +40,12 @@ research_app = typer.Typer(help="Research session commands")
 skill_app = typer.Typer(help="Skill inspection commands")
 session_app = typer.Typer(help="Session management commands")
 
+benchmark_app = typer.Typer(help="Benchmark commands")
+
 app.add_typer(research_app, name="research")
 app.add_typer(skill_app, name="skill")
 app.add_typer(session_app, name="session")
+app.add_typer(benchmark_app, name="benchmark")
 
 
 BUDGET_OPTIONS = {
@@ -447,6 +450,206 @@ def session_summary(
     data = json.loads(summary_path.read_text())
     summary = SessionSummary(**data)
     console.print(format_summary(summary))
+
+
+# --- Benchmark Commands ---
+
+
+@benchmark_app.command("run")
+def benchmark_run(
+    queries_file: str = typer.Argument(..., help="Path to queries JSONL file"),
+    budgets: str = typer.Option("2m,5m,10m", "--budgets", help="Comma-separated budgets to test"),
+    concurrency: int = typer.Option(1, "--concurrency", "-c", help="Max concurrent runs"),
+    output_dir: str = typer.Option(".benchmark_runs", "--output-dir", "-o", help="Output directory"),
+    mock: bool = typer.Option(False, "--mock", help="Use mock provider"),
+    resume: Optional[str] = typer.Option(None, "--resume", help="Resume a previous run ID"),
+):
+    """Run a benchmark: each query x each budget tier.
+
+    Queries file: JSONL with {"id": "q001", "query": "..."} per line,
+    or plain text (one query per line, auto-numbered).
+    """
+    from .benchmark.runner import run_benchmark
+
+    queries_path = Path(queries_file)
+    if not queries_path.exists():
+        console.print(f"[red]File not found: {queries_file}[/red]")
+        raise typer.Exit(1)
+
+    # Parse queries
+    queries = []
+    for i, line in enumerate(queries_path.read_text().strip().split("\n"), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+            queries.append({
+                "id": data.get("id", f"q{i:03d}"),
+                "query": data.get("query", data.get("q", line)),
+            })
+        except json.JSONDecodeError:
+            queries.append({"id": f"q{i:03d}", "query": line})
+
+    if not queries:
+        console.print("[red]No queries found in file[/red]")
+        raise typer.Exit(1)
+
+    budget_list = [TimeBudget(b.strip()) for b in budgets.split(",")]
+    provider = MockNimbleProvider() if mock else _get_provider()
+
+    total_runs = len(queries) * len(budget_list)
+    console.print(Panel(
+        f"[bold]Benchmark Run[/bold]\n\n"
+        f"Queries: {len(queries)} | Budgets: {budgets} | Total runs: {total_runs}\n"
+        f"Concurrency: {concurrency} | Output: {output_dir}\n"
+        f"Provider: {'mock' if mock else 'live'}",
+        title="Benchmark",
+        border_style="blue",
+    ))
+
+    async def _run():
+        return await run_benchmark(
+            queries=queries,
+            provider=provider,
+            output_dir=output_dir,
+            budgets=budget_list,
+            concurrency=concurrency,
+            resume_run_id=resume,
+        )
+
+    result = asyncio.run(_run())
+
+    console.print(f"\n[green]Benchmark complete: {result.run_id}[/green]")
+    console.print(f"  Completed: {result.completed}/{result.total_runs}")
+    console.print(f"  Failed: {result.failed}")
+    console.print(f"  Results: {output_dir}/{result.run_id}/")
+    console.print(f"\nRun [bold]nrh benchmark scorecard {result.run_id}[/bold] to see analysis.")
+
+
+@benchmark_app.command("scorecard")
+def benchmark_scorecard(
+    run_id: str = typer.Argument(..., help="Benchmark run ID"),
+    output_dir: str = typer.Option(".benchmark_runs", "--output-dir", "-o"),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: text, json, csv"),
+):
+    """Show scorecard for a benchmark run."""
+    from .benchmark.analyzer import (
+        build_scorecard,
+        format_scorecard_csv,
+        format_scorecard_text,
+        load_results,
+    )
+
+    run_dir = Path(output_dir) / run_id
+    if not run_dir.exists():
+        console.print(f"[red]Run not found: {run_dir}[/red]")
+        raise typer.Exit(1)
+
+    results = load_results(run_dir)
+    if not results:
+        console.print("[red]No results found[/red]")
+        raise typer.Exit(1)
+
+    scorecard = build_scorecard(results)
+
+    if format == "json":
+        console.print_json(json.dumps(scorecard, indent=2, default=str))
+    elif format == "csv":
+        csv_text = format_scorecard_csv(scorecard)
+        console.print(csv_text)
+        # Also save to file
+        csv_path = run_dir / "scorecard.csv"
+        csv_path.write_text(csv_text)
+        console.print(f"\n[dim]Saved to {csv_path}[/dim]")
+    else:
+        text = format_scorecard_text(scorecard)
+        console.print(text)
+        # Also save to file
+        text_path = run_dir / "scorecard.txt"
+        text_path.write_text(text)
+        console.print(f"\n[dim]Saved to {text_path}[/dim]")
+
+
+@benchmark_app.command("list")
+def benchmark_list(
+    output_dir: str = typer.Option(".benchmark_runs", "--output-dir", "-o"),
+):
+    """List all benchmark runs."""
+    runs_dir = Path(output_dir)
+    if not runs_dir.exists():
+        console.print("[dim]No benchmark runs found.[/dim]")
+        return
+
+    table = Table(title="Benchmark Runs")
+    table.add_column("Run ID")
+    table.add_column("Queries")
+    table.add_column("Budgets")
+    table.add_column("Completed")
+    table.add_column("Failed")
+    table.add_column("Rate")
+
+    for d in sorted(runs_dir.iterdir(), reverse=True):
+        if d.is_dir():
+            summary_path = d / "summary.json"
+            if summary_path.exists():
+                data = json.loads(summary_path.read_text())
+                table.add_row(
+                    data.get("run_id", d.name),
+                    str(data.get("total_queries", "?")),
+                    ", ".join(data.get("budgets", [])),
+                    str(data.get("completed", "?")),
+                    str(data.get("failed", "?")),
+                    f"{data.get('success_rate', 0):.0f}%",
+                )
+            else:
+                # In-progress run — count JSONL lines
+                results_path = d / "results.jsonl"
+                count = 0
+                if results_path.exists():
+                    count = sum(1 for line in results_path.read_text().strip().split("\n") if line.strip())
+                table.add_row(d.name, "?", "?", str(count), "?", "[yellow]in progress[/yellow]")
+
+    console.print(table)
+
+
+@benchmark_app.command("inspect")
+def benchmark_inspect(
+    run_id: str = typer.Argument(..., help="Benchmark run ID"),
+    query_id: Optional[str] = typer.Option(None, "--query", "-q", help="Filter by query ID"),
+    budget: Optional[str] = typer.Option(None, "--budget", "-b", help="Filter by budget"),
+    output_dir: str = typer.Option(".benchmark_runs", "--output-dir", "-o"),
+):
+    """Inspect individual results from a benchmark run."""
+    from .benchmark.analyzer import load_results
+
+    run_dir = Path(output_dir) / run_id
+    results = load_results(run_dir)
+
+    if query_id:
+        results = [r for r in results if r["query_id"] == query_id]
+    if budget:
+        results = [r for r in results if r["budget"] == budget]
+
+    if not results:
+        console.print("[red]No matching results[/red]")
+        raise typer.Exit(1)
+
+    for r in results:
+        status_color = "green" if r["status"] == "completed" else "red"
+        console.print(Panel(
+            f"Query: {r['query'][:100]}\n"
+            f"Status: [{status_color}]{r['status']}[/{status_color}] | "
+            f"Elapsed: {r['elapsed_seconds']:.1f}s\n"
+            f"Evidence: {r['total_evidence']} | Sources: {r['total_sources']} | "
+            f"Claims: {r['total_claims']} ({r['verified_claims']} verified)\n"
+            f"Tool calls: {r['total_tool_calls']} | Confidence: {r['confidence']}\n"
+            f"Session: {r['session_id']}\n"
+            + (f"Error: {r['error']}" if r["error"] else "")
+            + (f"\n\nExcerpt: {r['report_excerpt'][:300]}" if r.get("report_excerpt") else ""),
+            title=f"[bold]{r['query_id']}[/bold] @ {r['budget']}",
+            border_style="cyan",
+        ))
 
 
 if __name__ == "__main__":
