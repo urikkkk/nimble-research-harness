@@ -142,8 +142,21 @@ async def run_research(
 
         if use_wsa:
             strategy = ExecutionStrategy(catalog)
-            # Use skill spec to provide rich scoring inputs
+            # Build domain list from skill spec + target entities + config
             skill_domains = list(skill.source_policy.domain_include or []) + config.target_domains
+
+            # Infer domains from target entities (e.g., "Walmart Dallas TX" → "walmart.com")
+            for entity in (skill.target_entities or []):
+                entity_lower = entity.lower()
+                # Search catalog for any agent whose domain matches the entity name
+                for agent in catalog.all_agents:
+                    if agent.domain:
+                        domain_base = agent.domain.lower().replace("www.", "").split(".")[0]
+                        if domain_base in entity_lower and agent.domain not in skill_domains:
+                            skill_domains.append(agent.domain)
+
+            if skill_domains:
+                logger.info("wsa_domains_resolved", domains=skill_domains[:10])
             mode, wsa_matches = await strategy.resolve(
                 target_domains=skill_domains,
                 target_verticals=[skill.task_type.value] if skill.task_type else [],

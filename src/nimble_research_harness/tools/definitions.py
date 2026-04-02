@@ -286,7 +286,32 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
         start = time.time()
         ctx = get_context()
         agent_name = params.pop("agent_name")
-        resp = await provider.run_agent(agent_name, params)
+
+        # Normalize keyword params — different WSAs use different names for the same concept
+        # The planner sends "keyword" (our standard), but some agents expect other names
+        if "keyword" in params and "search_query" not in params and "query" not in params:
+            # Try keyword first; if it fails, the retry below will try alternatives
+            pass
+
+        try:
+            resp = await provider.run_agent(agent_name, params)
+        except Exception as first_err:
+            # If keyword param fails, try common alternatives
+            if "keyword" in params:
+                alt_params = dict(params)
+                kw_val = alt_params.pop("keyword")
+                for alt_name in ["search_query", "query", "search_term", "q"]:
+                    try:
+                        alt_params[alt_name] = kw_val
+                        resp = await provider.run_agent(agent_name, alt_params)
+                        break
+                    except Exception:
+                        alt_params.pop(alt_name, None)
+                        continue
+                else:
+                    raise first_err
+            else:
+                raise
         latency = int((time.time() - start) * 1000)
 
         # Extract structured items from WSA response
