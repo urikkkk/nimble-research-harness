@@ -284,11 +284,11 @@ async def run_research(
 
         if can_deepen:
             iteration = 0
-            max_iterations = min(5, int((monitor.remaining_seconds - analysis_reserve) // 60))
             prev_count = len(evidence)
-            logger.info("deepening_started", reserve=f"{analysis_reserve:.0f}s", max_iter=max_iterations)
+            available = monitor.remaining_seconds - analysis_reserve
+            logger.info("deepening_started", reserve=f"{analysis_reserve:.0f}s", available=f"{available:.0f}s")
 
-            while iteration < max_iterations and monitor.remaining_seconds > analysis_reserve:
+            while monitor.remaining_seconds > analysis_reserve:
                 if event_stream:
                     await event_stream.stage_entered(f"deepening_round_{iteration + 1}", monitor.elapsed_seconds)
 
@@ -345,7 +345,7 @@ async def run_research(
                     growth=f"{growth:.1%}",
                 )
 
-                if growth < 0.10:
+                if growth < 0.05:
                     logger.info("deepening_converged", growth=f"{growth:.1%}")
                     break
 

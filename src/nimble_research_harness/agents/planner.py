@@ -274,7 +274,7 @@ Rules:
 - Never repeat queries that already produced results
 - Decompose the search space along whatever dimensions are natural for this domain
 - Use varied query formulations (synonyms, related terms, alternative phrasings)
-- Generate 15-20 search steps per round
+- Generate 20-30 search steps per round for maximum coverage
 - Each step should target a unique sub-area not yet covered
 - Always set max_results to 20 or higher for maximum coverage per query
 - For queries about places, locations, or geographic entities, use focus: "location" or "geo"
@@ -378,7 +378,7 @@ Already collected: {len(evidence)} evidence items from these domains:
 {domain_summary}
 {suggestions}
 
-Generate 15-20 NEW search steps that explore dimensions NOT yet covered.
+Generate 20-30 NEW search steps that explore dimensions NOT yet covered.
 Call `submit_plan` with your steps."""
 
     kwargs = {}
