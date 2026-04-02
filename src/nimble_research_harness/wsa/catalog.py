@@ -31,9 +31,9 @@ def infer_wsa_input_params(entity_type: str | None, domain: str | None = None) -
         params = {"keyword": "Search term / product name / query string"}
         # Some agents also accept location
         if any(k in et for k in ["location", "store", "dealer"]):
-            params["zip_code"] = "ZIP code for location-based results (optional)"
+            params["zipcode"] = "ZIP code for location-based results (optional)"
         elif domain and any(d in (domain or "").lower() for d in ["walmart", "target", "kroger", "heb"]):
-            params["zip_code"] = "ZIP code for store location (optional)"
+            params["zipcode"] = "ZIP code for store location (optional)"
         return params
 
     # PDP / Detail / Property agents → URL-based input
@@ -48,7 +48,7 @@ def infer_wsa_input_params(entity_type: str | None, domain: str | None = None) -
     if any(k in et for k in ["locator", "location"]):
         return {
             "location": "City, state, or address to search near",
-            "zip_code": "ZIP code (alternative to location)",
+            "zipcode": "ZIP code (alternative to location)",
         }
 
     # Default fallback for unknown types

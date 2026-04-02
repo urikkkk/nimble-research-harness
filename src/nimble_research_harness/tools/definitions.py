@@ -292,6 +292,12 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
         ctx = get_context()
         agent_name = params.pop("agent_name")
 
+        # Normalize common param name variations
+        if "zip_code" in params and "zipcode" not in params:
+            params["zipcode"] = params.pop("zip_code")
+        if "zip" in params and "zipcode" not in params:
+            params["zipcode"] = params.pop("zip")
+
         # Extract the search value from whichever alias the planner used
         search_value = None
         for alias in _SEARCH_ALIASES:
