@@ -289,18 +289,45 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
         resp = await provider.run_agent(agent_name, params)
         latency = int((time.time() - start) * 1000)
 
+        # Extract structured items from WSA response
+        items = []
+        if isinstance(resp.data, dict):
+            items = resp.data.get("parsing", resp.data.get("parsed_items", resp.data.get("results", [])))
+        elif isinstance(resp.data, list):
+            items = resp.data
+        if not isinstance(items, list):
+            items = []
+
         await ctx.storage.insert_tool_call(
             ToolCallRecord(
                 session_id=ctx.session_id,
                 tool=ToolName.AGENTS_RUN,
                 params={"agent_name": agent_name, **params},
-                status=ToolCallStatus.SUCCESS,
-                response_summary=f"WSA {agent_name}: {resp.status}",
+                status=ToolCallStatus.SUCCESS if items else ToolCallStatus.PARTIAL,
+                response_summary=f"WSA {agent_name}: {len(items)} items",
+                result_count=len(items),
                 latency_ms=latency,
             )
         )
 
-        return {"task_id": resp.task_id, "status": resp.status, "data": resp.data}
+        # Store each WSA result as evidence
+        import json as _json
+        for item in items[:50]:  # cap at 50 items per WSA call
+            content = _json.dumps(item, default=str)[:2000] if isinstance(item, dict) else str(item)[:2000]
+            title = item.get("product_name", item.get("name", item.get("title", "")))[:200] if isinstance(item, dict) else ""
+            url = item.get("product_url", item.get("url", item.get("link", ""))) if isinstance(item, dict) else ""
+            await ctx.storage.insert_evidence(
+                EvidenceItem(
+                    session_id=ctx.session_id,
+                    source_url=url or f"wsa://{agent_name}",
+                    title=title,
+                    content=content,
+                    content_type="wsa_result",
+                    relevance_score=0.9,  # WSA data is high quality
+                )
+            )
+
+        return {"task_id": resp.task_id, "status": resp.status, "items_count": len(items), "data": resp.data}
 
     registry.register(
         ToolDefinition(

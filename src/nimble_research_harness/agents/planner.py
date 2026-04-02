@@ -121,9 +121,10 @@ async def create_plan(
                 line = f"- {s.agent_name} (score: {s.composite_score:.2f}, domain: {s.agent_domain or '?'}, type: {s.agent_entity_type or '?'})"
                 if s.agent_description:
                     line += f"\n    {s.agent_description[:120]}"
-                inp = getattr(s, 'input_properties', None)
-                if inp:
-                    params = ", ".join(f'"{k}"' for k in list(inp.keys())[:5])
+                if s.input_params_hint:
+                    line += f"\n    Input params: {s.input_params_hint}"
+                elif s.input_properties:
+                    params = ", ".join(f'"{k}"' for k in list(s.input_properties.keys())[:5])
                     line += f"\n    Input params: {params}"
                 wsa_lines.append(line)
         if wsa_lines:
@@ -133,10 +134,12 @@ async def create_plan(
 WSA USAGE RULES:
 - Include nimble_agents_run steps IN PARALLEL with nimble_search steps
 - WSA calls return structured data (prices, product details, ratings) that search snippets can't
-- For SERP agents: pass "query" param with search keywords
-- For PDP agents: pass "url" param with a product/page URL
+- CRITICAL: Use the EXACT param names listed above for each agent (e.g., "keyword" not "query")
+- For SERP agents: typically use "keyword" param (check each agent's Input params above)
+- For PDP agents: typically use "url" param with a product/page URL
 - Set wsa_agent_name in each WSA step to the agent template name
-- Plan 5-15 WSA calls alongside your search steps"""
+- Plan 5-15 WSA calls alongside your search steps
+- Each WSA step params go directly to the agent — only include the agent's listed input params"""
 
     user_prompt = f"""Create an execution plan for this research skill:
 
