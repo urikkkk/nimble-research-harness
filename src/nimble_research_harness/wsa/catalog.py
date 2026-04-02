@@ -18,6 +18,43 @@ DEFAULT_CACHE_TTL = int(os.environ.get("NRH_WSA_CACHE_TTL", "3600"))
 CACHE_DIR = Path(os.environ.get("NRH_WSA_CACHE_DIR", ".wsa_cache"))
 
 
+def infer_wsa_input_params(entity_type: str | None, domain: str | None = None) -> dict[str, str]:
+    """Infer the expected input params for a WSA based on its entity_type.
+
+    Returns a dict of {param_name: description} that the planner can use
+    to construct valid WSA calls without fetching each agent's schema at runtime.
+    """
+    et = (entity_type or "").lower()
+
+    # SERP / Search / Listing agents → keyword-based input
+    if any(k in et for k in ["serp", "search", "listing", "dealer", "directory"]):
+        params = {"keyword": "Search term / product name / query string"}
+        # Some agents also accept location
+        if any(k in et for k in ["location", "store", "dealer"]):
+            params["zip_code"] = "ZIP code for location-based results (optional)"
+        elif domain and any(d in (domain or "").lower() for d in ["walmart", "target", "kroger", "heb"]):
+            params["zip_code"] = "ZIP code for store location (optional)"
+        return params
+
+    # PDP / Detail / Property agents → URL-based input
+    if any(k in et for k in ["detail", "pdp", "product", "property", "article", "profile", "review", "event"]):
+        return {"url": "Full URL of the product/detail page to extract"}
+
+    # Category / Landing pages
+    if any(k in et for k in ["category", "landing", "clp"]):
+        return {"url": "Category page URL to extract listings from"}
+
+    # Store locator
+    if any(k in et for k in ["locator", "location"]):
+        return {
+            "location": "City, state, or address to search near",
+            "zip_code": "ZIP code (alternative to location)",
+        }
+
+    # Default fallback for unknown types
+    return {"keyword": "Search term or query"}
+
+
 class WSACatalog:
     """Manages the cached inventory of available Nimble WSAs."""
 

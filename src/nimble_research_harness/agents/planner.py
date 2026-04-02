@@ -135,11 +135,14 @@ WSA USAGE RULES:
 - Include nimble_agents_run steps IN PARALLEL with nimble_search steps
 - WSA calls return structured data (prices, product details, ratings) that search snippets can't
 - CRITICAL: Use the EXACT param names listed above for each agent (e.g., "keyword" not "query")
-- For SERP agents: typically use "keyword" param (check each agent's Input params above)
-- For PDP agents: typically use "url" param with a product/page URL
+- For SERP agents: use "keyword" param with the search term
+- For PDP agents: use "url" param with the product page URL
 - Set wsa_agent_name in each WSA step to the agent template name
-- Plan 5-15 WSA calls alongside your search steps
-- Each WSA step params go directly to the agent — only include the agent's listed input params"""
+- GENERATE MANY WSA CALLS: Create one WSA step per query × agent combination
+  Example: 4 retailers × 5 cereal brands = 20 WSA steps, all running in parallel
+  WSAs have HIGH CONCURRENCY — the more parallel calls the better
+- Each WSA step params go directly to the agent — only include the agent's listed input params
+- WSAs and regular searches complement each other — run both"""
 
     user_prompt = f"""Create an execution plan for this research skill:
 

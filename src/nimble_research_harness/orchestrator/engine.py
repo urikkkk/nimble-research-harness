@@ -160,22 +160,8 @@ async def run_research(
                 strong=[s.agent_name for s in wsa_matches if s.is_strong_match],
             )
 
-            # Fetch detailed input/output schemas for top WSA matches
-            for match in wsa_matches[:5]:
-                if match.composite_score >= 0.4:
-                    try:
-                        details = await provider.get_agent(match.agent_name)
-                        # Convert list-format input_properties to dict for easier use
-                        if isinstance(details.input_properties, list):
-                            match.input_properties = {
-                                p["name"]: p for p in details.input_properties
-                            }
-                        else:
-                            match.input_properties = details.input_properties or {}
-                        match.output_schema = details.output_schema or {}
-                        match.input_params_hint = details.input_params_summary
-                    except Exception as e:
-                        logger.warning("wsa_detail_fetch_failed", agent=match.agent_name, error=str(e))
+            # Input params are already inferred by the scorer from entity_type
+            # No runtime get_agent() calls needed — params are in match.input_params_hint
         else:
             logger.info("wsa_skipped", reason="budget_too_low" if not use_wsa else "raw_tools_mode")
         await monitor.create_checkpoint(ExecutionStage.SKILL_GEN, 2)
