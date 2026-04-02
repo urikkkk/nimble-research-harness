@@ -33,7 +33,7 @@ TIMEOUTS = {
     "extract": 60.0,
     "map": 60.0,
     "crawl": 300.0,
-    "agents": 120.0,
+    "agents": 30.0,
     "tasks": 30.0,
 }
 

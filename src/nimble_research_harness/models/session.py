@@ -29,7 +29,7 @@ class TimeBudgetPolicy(BaseModel):
     max_searches: int = Field(ge=1, le=200)
     max_extracts: int = Field(ge=0, le=500)
     max_crawl_pages: int = Field(ge=0, le=5000)
-    concurrency_limit: int = Field(ge=1, le=20)
+    concurrency_limit: int = Field(ge=1, le=30)
     verification_strictness: int = Field(ge=0, le=3)
     max_refinement_loops: int = Field(ge=0, le=5)
     stop_conditions: StopConditions = Field(default_factory=StopConditions)
@@ -85,7 +85,7 @@ class TimeBudgetPolicy(BaseModel):
                 max_searches=40,
                 max_extracts=30,
                 max_crawl_pages=200,
-                concurrency_limit=10,
+                concurrency_limit=20,
                 verification_strictness=2,
                 max_refinement_loops=3,
                 stop_conditions=StopConditions(
@@ -101,7 +101,7 @@ class TimeBudgetPolicy(BaseModel):
                 max_searches=100,
                 max_extracts=80,
                 max_crawl_pages=1000,
-                concurrency_limit=15,
+                concurrency_limit=25,
                 verification_strictness=3,
                 max_refinement_loops=4,
                 stop_conditions=StopConditions(
@@ -117,7 +117,7 @@ class TimeBudgetPolicy(BaseModel):
                 max_searches=200,
                 max_extracts=500,
                 max_crawl_pages=5000,
-                concurrency_limit=20,
+                concurrency_limit=30,
                 verification_strictness=3,
                 max_refinement_loops=5,
                 stop_conditions=StopConditions(

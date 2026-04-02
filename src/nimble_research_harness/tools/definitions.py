@@ -282,36 +282,46 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
     )
 
     # --- nimble_agents_run ---
+    # Cache the working search param name per agent (learned on first call)
+    _agent_param_cache: dict[str, str] = {}
+    _SEARCH_ALIASES = {"keyword", "query", "search_query", "search_term", "q"}
+    _SEARCH_TRY_ORDER = ["keyword", "search_query", "query", "q"]
+
     async def handle_agents_run(params: dict[str, Any]) -> dict[str, Any]:
         start = time.time()
         ctx = get_context()
         agent_name = params.pop("agent_name")
 
-        # Normalize keyword params — different WSAs use different names for the same concept
-        # The planner sends "keyword" (our standard), but some agents expect other names
-        if "keyword" in params and "search_query" not in params and "query" not in params:
-            # Try keyword first; if it fails, the retry below will try alternatives
-            pass
+        # Extract the search value from whichever alias the planner used
+        search_value = None
+        for alias in _SEARCH_ALIASES:
+            if alias in params:
+                search_value = params.pop(alias)
+                break
 
-        try:
-            resp = await provider.run_agent(agent_name, params)
-        except Exception as first_err:
-            # If keyword param fails, try common alternatives
-            if "keyword" in params:
-                alt_params = dict(params)
-                kw_val = alt_params.pop("keyword")
-                for alt_name in ["search_query", "query", "search_term", "q"]:
+        if search_value is not None:
+            # Check cache first — zero retries if we've seen this agent before
+            cached = _agent_param_cache.get(agent_name)
+            if cached:
+                params[cached] = search_value
+                resp = await provider.run_agent(agent_name, params)
+            else:
+                # First call to this agent — discover the right param name
+                last_err = None
+                for param_name in _SEARCH_TRY_ORDER:
                     try:
-                        alt_params[alt_name] = kw_val
-                        resp = await provider.run_agent(agent_name, alt_params)
+                        test_params = {**params, param_name: search_value}
+                        resp = await provider.run_agent(agent_name, test_params)
+                        _agent_param_cache[agent_name] = param_name  # cache for all future calls
+                        params = test_params
                         break
-                    except Exception:
-                        alt_params.pop(alt_name, None)
+                    except Exception as e:
+                        last_err = e
                         continue
                 else:
-                    raise first_err
-            else:
-                raise
+                    raise last_err or Exception(f"No valid search param for {agent_name}")
+        else:
+            resp = await provider.run_agent(agent_name, params)
         latency = int((time.time() - start) * 1000)
 
         # Extract structured items from WSA response
