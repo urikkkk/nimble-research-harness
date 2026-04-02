@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from typing import Any, Optional
 
 from ..models.discovery import AgentFitScore
 from ..models.enums import ExecutionMode, ToolName
+from ..models.evidence import EvidenceItem
 from ..models.plan import PlanStep, ResearchPlan
 from ..models.skill import DynamicSkillSpec
 from ..models.session import SessionConfig
@@ -172,4 +173,219 @@ Call `submit_plan` with ordered steps."""
             steps=steps,
         )
 
+    return _plan_result
+
+
+# --- Evidence Sufficiency Assessment ---
+
+SUFFICIENCY_PROMPT = """You are a research quality assessor. Given a research objective and a summary of
+evidence collected so far, determine whether the evidence is SUFFICIENT to produce a high-quality answer.
+
+Respond by calling `assess` with your judgment. Consider:
+- Does the evidence cover the key dimensions of the question?
+- Are there major gaps (e.g., missing geographies, categories, sources)?
+- For "find all" or "list" questions: is the sample size large enough?
+- For analytical questions: is there enough data to draw conclusions?
+
+If NOT sufficient, suggest 5-10 specific follow-up search queries that would fill the gaps.
+The queries should explore NEW dimensions not already covered."""
+
+
+async def assess_evidence_sufficiency(
+    config: SessionConfig,
+    skill: DynamicSkillSpec,
+    evidence: list[EvidenceItem],
+    fast_mode: bool = False,
+) -> dict[str, Any]:
+    """Ask the LLM whether collected evidence is sufficient to answer the question."""
+    registry = ToolRegistry()
+    _result: dict[str, Any] = {"sufficient": True, "reason": "default", "suggested_queries": []}
+
+    async def handle_assess(params: dict[str, Any]) -> dict[str, Any]:
+        nonlocal _result
+        _result = {
+            "sufficient": params.get("sufficient", True),
+            "reason": params.get("reason", ""),
+            "suggested_queries": params.get("suggested_queries", []),
+        }
+        return {"status": "ok"}
+
+    registry.register(
+        ToolDefinition(
+            name="assess",
+            description="Submit your evidence sufficiency assessment.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "sufficient": {"type": "boolean", "description": "True if evidence is enough to answer well"},
+                    "reason": {"type": "string", "description": "Why sufficient or not"},
+                    "suggested_queries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "If not sufficient: 5-10 follow-up search queries to fill gaps",
+                    },
+                },
+                "required": ["sufficient", "reason"],
+            },
+            handler=handle_assess,
+        )
+    )
+
+    # Summarize evidence for the LLM (domains + titles, not full content)
+    domains = {}
+    for e in evidence:
+        d = e.source_domain or "unknown"
+        domains[d] = domains.get(d, 0) + 1
+    domain_summary = ", ".join(f"{d} ({c})" for d, c in sorted(domains.items(), key=lambda x: -x[1])[:20])
+    sample_titles = "\n".join(f"- {e.title or e.source_url}" for e in evidence[:30])
+
+    user_prompt = f"""Research objective: {skill.user_objective}
+
+Evidence collected so far: {len(evidence)} items
+Top source domains: {domain_summary}
+
+Sample evidence titles:
+{sample_titles}
+
+Is this evidence sufficient to produce a high-quality answer to the research objective?
+Call `assess` with your judgment."""
+
+    kwargs = {}
+    if fast_mode:
+        kwargs["model"] = FAST_MODEL
+    await run_agent_loop(
+        system_prompt=SUFFICIENCY_PROMPT,
+        user_prompt=user_prompt,
+        registry=registry,
+        tool_names=["assess"],
+        max_turns=2,
+        max_tokens=2048,
+        **kwargs,
+    )
+    return _result
+
+
+# --- Follow-up Plan Generator ---
+
+FOLLOWUP_PROMPT = """You are a research deepening planner. Given a research objective and a summary of what
+has already been collected, generate NEW search queries that explore UNCOVERED dimensions
+of the search space.
+
+Rules:
+- Never repeat queries that already produced results
+- Decompose the search space along whatever dimensions are natural for this domain
+- Use nimble_map on directory/listing sites found in evidence to discover more pages
+- Use varied query formulations (synonyms, related terms, alternative phrasings)
+- Generate 15-20 search steps per round
+- Each step should target a unique sub-area not yet covered
+
+Available tools (use exact param names):
+- nimble_search: params must include "query" (single string), optional "focus" and "max_results"
+- nimble_extract: params must include "url" (single string URL)
+- nimble_map: params must include "url" (single string URL)
+
+IMPORTANT: Each step's params must use singular "query" (not "queries") and "url" (not "urls").
+
+Call `submit_plan` with your follow-up steps."""
+
+
+async def create_followup_plan(
+    config: SessionConfig,
+    skill: DynamicSkillSpec,
+    evidence: list[EvidenceItem],
+    suggested_queries: Optional[list[str]] = None,
+    fast_mode: bool = False,
+) -> Optional[ResearchPlan]:
+    """Generate a follow-up research plan to deepen evidence collection."""
+    global _plan_result
+    _plan_result = None
+
+    registry = ToolRegistry()
+
+    async def handle_submit(params: dict[str, Any]) -> dict[str, Any]:
+        global _plan_result
+        steps = []
+        for i, s in enumerate(params.get("steps", [])):
+            tool_name = s.get("tool", "nimble_search")
+            try:
+                tool = ToolName(tool_name)
+            except ValueError:
+                tool = ToolName.SEARCH
+            steps.append(
+                PlanStep(
+                    order=i,
+                    description=s.get("description", f"Step {i}"),
+                    tool=tool,
+                    params=s.get("params", {}),
+                    timeout_seconds=s.get("timeout_seconds", 30),
+                )
+            )
+        _plan_result = ResearchPlan(
+            session_id=config.session_id,
+            skill_id=skill.skill_id,
+            objective=f"Deepen: {skill.user_objective}",
+            subquestions=[],
+            steps=steps,
+        )
+        return {"status": "ok", "steps": len(steps)}
+
+    registry.register(
+        ToolDefinition(
+            name="submit_plan",
+            description="Submit follow-up research plan with new steps.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "description": {"type": "string"},
+                                "tool": {"type": "string", "enum": [t.value for t in ToolName]},
+                                "params": {"type": "object"},
+                                "timeout_seconds": {"type": "integer", "default": 30},
+                            },
+                            "required": ["description", "tool", "params"],
+                        },
+                    },
+                },
+                "required": ["steps"],
+            },
+            handler=handle_submit,
+        )
+    )
+
+    # Build evidence summary
+    domains = {}
+    for e in evidence:
+        d = e.source_domain or "unknown"
+        domains[d] = domains.get(d, 0) + 1
+    domain_summary = ", ".join(f"{d} ({c})" for d, c in sorted(domains.items(), key=lambda x: -x[1])[:20])
+
+    suggestions = ""
+    if suggested_queries:
+        suggestions = "\nSuggested follow-up queries from assessment:\n" + "\n".join(f"- {q}" for q in suggested_queries)
+
+    user_prompt = f"""Research objective: {skill.user_objective}
+
+Already collected: {len(evidence)} evidence items from these domains:
+{domain_summary}
+{suggestions}
+
+Generate 15-20 NEW search steps that explore dimensions NOT yet covered.
+Call `submit_plan` with your steps."""
+
+    kwargs = {}
+    if fast_mode:
+        kwargs["model"] = FAST_MODEL
+    await run_agent_loop(
+        system_prompt=FOLLOWUP_PROMPT,
+        user_prompt=user_prompt,
+        registry=registry,
+        tool_names=["submit_plan"],
+        max_turns=2,
+        max_tokens=4096,
+        **kwargs,
+    )
     return _plan_result

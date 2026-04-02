@@ -16,7 +16,7 @@ from typing import Any, Optional
 from ..agents.analyst import analyze_and_report
 from ..agents.intake import normalize_request
 from ..agents.monitor import BudgetMonitor
-from ..agents.planner import create_plan
+from ..agents.planner import assess_evidence_sufficiency, create_followup_plan, create_plan
 from ..agents.researcher import execute_research
 from ..agents.skill_builder import build_skill
 from ..agents.verifier import verify_claims
@@ -272,6 +272,81 @@ async def run_research(
                 except (asyncio.TimeoutError, Exception) as e:
                     logger.warning("extraction_failed", url=url, error=str(e))
             await monitor.create_checkpoint(ExecutionStage.EXTRACTION, 6)
+
+        # --- Stage 6b: Evidence Deepening (budget >= 10m only) ---
+        can_deepen = (
+            config.time_budget in (TimeBudget.STANDARD_10M, TimeBudget.DEEP_30M, TimeBudget.EXHAUSTIVE_1H)
+            and not monitor.is_over_budget
+            and monitor.remaining_seconds > 120
+        )
+
+        if can_deepen:
+            iteration = 0
+            max_iterations = min(5, int(monitor.remaining_seconds // 60))
+            prev_count = len(evidence)
+
+            while iteration < max_iterations and monitor.remaining_seconds > 120:
+                if event_stream:
+                    await event_stream.stage_entered(f"deepening_round_{iteration + 1}", monitor.elapsed_seconds)
+
+                try:
+                    assessment = await asyncio.wait_for(
+                        assess_evidence_sufficiency(config, skill, evidence, fast_mode=fast_mode),
+                        timeout=min(30, monitor.remaining_seconds * 0.1),
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("sufficiency_check_timeout")
+                    break
+
+                if assessment["sufficient"]:
+                    logger.info("evidence_sufficient", reason=assessment["reason"], evidence_count=len(evidence))
+                    break
+
+                logger.info("evidence_insufficient", reason=assessment["reason"], suggestions=len(assessment.get("suggested_queries", [])))
+
+                try:
+                    followup_plan = await asyncio.wait_for(
+                        create_followup_plan(
+                            config, skill, evidence,
+                            suggested_queries=assessment.get("suggested_queries", []),
+                            fast_mode=fast_mode,
+                        ),
+                        timeout=min(30, monitor.remaining_seconds * 0.15),
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("followup_plan_timeout")
+                    break
+
+                if not followup_plan or followup_plan.total_steps == 0:
+                    logger.info("no_followup_steps")
+                    break
+
+                try:
+                    result = await asyncio.wait_for(
+                        execute_research(config, followup_plan, registry),
+                        timeout=max(30, monitor.remaining_seconds * 0.4),
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("deepening_research_timeout")
+                    break
+
+                evidence = await storage.get_evidence(session_id_str)
+                new_count = len(evidence)
+                growth = (new_count - prev_count) / max(prev_count, 1)
+                logger.info(
+                    "deepening_iteration",
+                    iteration=iteration,
+                    new_evidence=new_count - prev_count,
+                    total=new_count,
+                    growth=f"{growth:.1%}",
+                )
+
+                if growth < 0.10:
+                    logger.info("deepening_converged", growth=f"{growth:.1%}")
+                    break
+
+                prev_count = new_count
+                iteration += 1
 
         # --- Stage 7: Analysis ---
         monitor.set_stage(ExecutionStage.ANALYSIS)
