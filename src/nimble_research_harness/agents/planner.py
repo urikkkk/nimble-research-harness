@@ -26,7 +26,20 @@ Your plan should:
 5. Include verification searches for important claims
 6. Stay within the time budget constraints
 
-STRATEGY: Allocate 70-80% of steps to nimble_search with varied queries. Use nimble_extract only for specific article URLs found in search results, not for generic retailer pages like walmart.com/grocery or target.com/cereal.
+STRATEGY — TWO-WAVE PIPELINE:
+
+Wave 1 (parallel seed layer — all run at once, no dependencies):
+- nimble_search steps: broad web queries to find URLs, snippets, and general data
+- SERP WSA steps: structured search on specific retailer/directory sites (if available)
+- Both run IN PARALLEL to maximize data collection speed
+
+Wave 2 (dependent detail layer — runs after Wave 1 completes):
+- PDP WSA steps: use product URLs or IDs found in Wave 1 to extract full product details
+- These steps should set depends_on to reference Wave 1 step IDs
+- Only include Wave 2 if PDP WSAs are available AND Wave 1 will produce URLs
+
+When NO WSA agents are available, allocate 100% to nimble_search.
+Use nimble_extract only for specific article URLs, not generic retailer pages.
 
 Available tools for research steps (use exact param names):
 - nimble_search: params must include "query" (single string), optional "focus" and "max_results". Use focus "shopping" for product pricing queries.
@@ -132,17 +145,24 @@ async def create_plan(
             wsa_info += """
 
 WSA USAGE RULES:
-- Include nimble_agents_run steps IN PARALLEL with nimble_search steps
-- WSA calls return structured data (prices, product details, ratings) that search snippets can't
 - CRITICAL: Use the EXACT param names listed above for each agent (e.g., "keyword" not "query")
 - For SERP agents: use "keyword" param with the search term
 - For PDP agents: use "url" param with the product page URL
 - Set wsa_agent_name in each WSA step to the agent template name
-- GENERATE MANY WSA CALLS: Create one WSA step per query × agent combination
-  Example: 4 retailers × 5 cereal brands = 20 WSA steps, all running in parallel
-  WSAs have HIGH CONCURRENCY — the more parallel calls the better
-- Each WSA step params go directly to the agent — only include the agent's listed input params
-- WSAs and regular searches complement each other — run both"""
+
+TWO-WAVE EXECUTION PATTERN:
+Wave 1 — Run ALL of these in parallel (no depends_on):
+  - nimble_search steps (broad web queries)
+  - SERP WSA steps (e.g., walmart_serp with keyword="Cheerios")
+  Generate MANY parallel calls: one per query × agent combination
+  Example: 4 retailers × 5 products = 20 SERP WSA steps + 10 web searches = 30 parallel steps
+
+Wave 2 — Run AFTER Wave 1 (set depends_on to Wave 1 step IDs):
+  - PDP WSA steps using URLs/IDs discovered in Wave 1
+  - Only add if PDP WSAs are available for the relevant domains
+
+WSAs have HIGH CONCURRENCY — maximize parallel calls.
+WSAs and regular searches complement each other — always run both in Wave 1."""
 
     user_prompt = f"""Create an execution plan for this research skill:
 
