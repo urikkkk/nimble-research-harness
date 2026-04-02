@@ -145,16 +145,24 @@ async def run_research(
             # Build domain list from skill spec + target entities + config
             skill_domains = list(skill.source_policy.domain_include or []) + config.target_domains
 
+            # Filter to real domains only (must contain a dot — skip "technology", "artificial intelligence", etc.)
+            skill_domains = [d for d in skill_domains if "." in d]
+
             # Infer domains from target entities (e.g., "Walmart Dallas TX" → "walmart.com")
             for entity in (skill.target_entities or []):
                 entity_lower = entity.lower()
-                # Search catalog for any agent whose domain matches the entity name
                 for agent in catalog.all_agents:
                     if agent.domain:
                         domain_base = agent.domain.lower().replace("www.", "").split(".")[0]
                         if domain_base in entity_lower and agent.domain not in skill_domains:
                             skill_domains.append(agent.domain)
 
+            # Skip WSA entirely if no real domains found — don't waste time scoring
+            if not skill_domains:
+                logger.info("wsa_skipped", reason="no_matching_domains")
+                use_wsa = False
+
+        if use_wsa:
             if skill_domains:
                 logger.info("wsa_domains_resolved", domains=skill_domains[:10])
             mode, wsa_matches = await strategy.resolve(
