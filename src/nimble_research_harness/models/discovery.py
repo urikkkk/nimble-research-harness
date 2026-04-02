@@ -24,9 +24,12 @@ class WSACandidate(BaseModel):
 
 
 class AgentFitScore(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
     agent_name: str
+    agent_domain: Optional[str] = None
+    agent_entity_type: Optional[str] = None
+    agent_description: Optional[str] = None
+    input_properties: dict[str, Any] = Field(default_factory=dict)
+    output_schema: dict[str, Any] = Field(default_factory=dict)
     domain_match: float = Field(default=0.0, ge=0.0, le=1.0)
     entity_type_match: float = Field(default=0.0, ge=0.0, le=1.0)
     vertical_match: float = Field(default=0.0, ge=0.0, le=1.0)

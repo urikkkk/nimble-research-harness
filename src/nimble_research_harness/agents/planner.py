@@ -115,12 +115,28 @@ async def create_plan(
 
     wsa_info = ""
     if wsa_matches:
-        wsa_lines = [
-            f"- {s.agent_name} (score: {s.composite_score:.2f})"
-            for s in wsa_matches[:10]
-        ]
-        wsa_info = f"\n\nAvailable WSA agents that match this task:\n" + "\n".join(wsa_lines)
-        wsa_info += "\nPrefer these for structured extraction from their target domains."
+        wsa_lines = []
+        for s in wsa_matches[:10]:
+            if s.composite_score >= 0.3:
+                line = f"- {s.agent_name} (score: {s.composite_score:.2f}, domain: {s.agent_domain or '?'}, type: {s.agent_entity_type or '?'})"
+                if s.agent_description:
+                    line += f"\n    {s.agent_description[:120]}"
+                inp = getattr(s, 'input_properties', None)
+                if inp:
+                    params = ", ".join(f'"{k}"' for k in list(inp.keys())[:5])
+                    line += f"\n    Input params: {params}"
+                wsa_lines.append(line)
+        if wsa_lines:
+            wsa_info = "\n\nAvailable WSA agents (structured web extractors — use for high-quality data):\n" + "\n".join(wsa_lines)
+            wsa_info += """
+
+WSA USAGE RULES:
+- Include nimble_agents_run steps IN PARALLEL with nimble_search steps
+- WSA calls return structured data (prices, product details, ratings) that search snippets can't
+- For SERP agents: pass "query" param with search keywords
+- For PDP agents: pass "url" param with a product/page URL
+- Set wsa_agent_name in each WSA step to the agent template name
+- Plan 5-15 WSA calls alongside your search steps"""
 
     user_prompt = f"""Create an execution plan for this research skill:
 

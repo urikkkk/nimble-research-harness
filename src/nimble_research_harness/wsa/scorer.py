@@ -70,6 +70,9 @@ def score_candidate(
 
     return AgentFitScore(
         agent_name=candidate.name,
+        agent_domain=candidate.domain,
+        agent_entity_type=candidate.entity_type,
+        agent_description=candidate.description,
         domain_match=domain_score,
         entity_type_match=entity_score,
         vertical_match=vertical_score,

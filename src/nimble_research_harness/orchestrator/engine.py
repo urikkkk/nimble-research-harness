@@ -113,27 +113,10 @@ async def run_research(
     wsa_matches: list[AgentFitScore] = []
 
     try:
-        # --- Stage 0b: WSA Strategy ---
+        # --- Stage 0b: Initial Discovery ---
         monitor.set_stage(ExecutionStage.DISCOVERY)
         if event_stream:
             await event_stream.stage_entered("discovery", monitor.elapsed_seconds)
-
-        if config.execution_mode != ExecutionMode.RAW_TOOLS:
-            strategy = ExecutionStrategy(catalog)
-            mode, wsa_matches = await strategy.resolve(
-                target_domains=config.target_domains,
-                target_verticals=[],
-                target_entity_types=[],
-                required_output_fields=[],
-                available_input_params={},
-            )
-            if config.execution_mode == ExecutionMode.HYBRID:
-                config = config.model_copy(update={"execution_mode": mode})
-            logger.info(
-                "execution_strategy",
-                mode=config.execution_mode.value,
-                wsa_matches=len(wsa_matches),
-            )
         await monitor.create_checkpoint(ExecutionStage.DISCOVERY, 1)
 
         # --- Stage 2: Skill Generation ---
@@ -150,6 +133,44 @@ async def run_research(
             timeout=skill_timeout,
         )
         logger.info("skill_generated", title=skill.title, subquestions=len(skill.subquestions))
+
+        # --- Stage 2b: WSA Strategy (budget >= 10m only) ---
+        # WSAs take 3-7s per call — only use with sufficient budget
+        use_wsa = config.time_budget not in (
+            TimeBudget.QUICK_30S, TimeBudget.SHORT_2M, TimeBudget.MEDIUM_5M,
+        ) and config.execution_mode != ExecutionMode.RAW_TOOLS
+
+        if use_wsa:
+            strategy = ExecutionStrategy(catalog)
+            # Use skill spec to provide rich scoring inputs
+            skill_domains = list(skill.source_policy.domain_include or []) + config.target_domains
+            mode, wsa_matches = await strategy.resolve(
+                target_domains=skill_domains,
+                target_verticals=[skill.task_type.value] if skill.task_type else [],
+                target_entity_types=skill.likely_source_types or [],
+                required_output_fields=[],
+                available_input_params={"query": True, "url": True, "keyword": True},
+            )
+            if config.execution_mode == ExecutionMode.HYBRID:
+                config = config.model_copy(update={"execution_mode": mode})
+            logger.info(
+                "wsa_strategy",
+                mode=config.execution_mode.value,
+                wsa_matches=len(wsa_matches),
+                strong=[s.agent_name for s in wsa_matches if s.is_strong_match],
+            )
+
+            # Fetch detailed input/output schemas for top WSA matches
+            for match in wsa_matches[:5]:
+                if match.composite_score >= 0.4:
+                    try:
+                        details = await provider.get_agent(match.agent_name)
+                        match.input_properties = details.input_properties
+                        match.output_schema = details.output_schema
+                    except Exception:
+                        pass  # non-critical, planner can still use basic info
+        else:
+            logger.info("wsa_skipped", reason="budget_too_low" if not use_wsa else "raw_tools_mode")
         await monitor.create_checkpoint(ExecutionStage.SKILL_GEN, 2)
 
         # --- Gate: Skill Approval ---
