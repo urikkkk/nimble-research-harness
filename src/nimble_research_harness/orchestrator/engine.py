@@ -274,18 +274,21 @@ async def run_research(
             await monitor.create_checkpoint(ExecutionStage.EXTRACTION, 6)
 
         # --- Stage 6b: Evidence Deepening (budget >= 10m only) ---
+        # Reserve 25% of total budget for analysis (min 120s)
+        analysis_reserve = max(120, config.policy.stop_conditions.wall_clock_seconds * 0.25)
         can_deepen = (
             config.time_budget in (TimeBudget.STANDARD_10M, TimeBudget.DEEP_30M, TimeBudget.EXHAUSTIVE_1H)
             and not monitor.is_over_budget
-            and monitor.remaining_seconds > 120
+            and monitor.remaining_seconds > analysis_reserve
         )
 
         if can_deepen:
             iteration = 0
-            max_iterations = min(5, int(monitor.remaining_seconds // 60))
+            max_iterations = min(5, int((monitor.remaining_seconds - analysis_reserve) // 60))
             prev_count = len(evidence)
+            logger.info("deepening_started", reserve=f"{analysis_reserve:.0f}s", max_iter=max_iterations)
 
-            while iteration < max_iterations and monitor.remaining_seconds > 120:
+            while iteration < max_iterations and monitor.remaining_seconds > analysis_reserve:
                 if event_stream:
                     await event_stream.stage_entered(f"deepening_round_{iteration + 1}", monitor.elapsed_seconds)
 
@@ -310,6 +313,7 @@ async def run_research(
                             config, skill, evidence,
                             suggested_queries=assessment.get("suggested_queries", []),
                             fast_mode=fast_mode,
+                            iteration=iteration,
                         ),
                         timeout=min(30, monitor.remaining_seconds * 0.15),
                     )

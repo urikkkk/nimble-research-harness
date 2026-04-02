@@ -231,24 +231,23 @@ async def assess_evidence_sufficiency(
         )
     )
 
-    # Summarize evidence for the LLM (domains + titles, not full content)
+    # Compact evidence summary — domains + sample titles (keep token count low)
     domains = {}
     for e in evidence:
         d = e.source_domain or "unknown"
         domains[d] = domains.get(d, 0) + 1
-    domain_summary = ", ".join(f"{d} ({c})" for d, c in sorted(domains.items(), key=lambda x: -x[1])[:20])
-    sample_titles = "\n".join(f"- {e.title or e.source_url}" for e in evidence[:30])
+    domain_summary = ", ".join(f"{d} ({c})" for d, c in sorted(domains.items(), key=lambda x: -x[1])[:15])
+    sample_titles = "\n".join(f"- {e.title or e.source_url}" for e in evidence[:15])
 
     user_prompt = f"""Research objective: {skill.user_objective}
 
-Evidence collected so far: {len(evidence)} items
-Top source domains: {domain_summary}
+Evidence: {len(evidence)} items from {len(domains)} unique domains
+Top domains: {domain_summary}
 
-Sample evidence titles:
+Sample (first 15):
 {sample_titles}
 
-Is this evidence sufficient to produce a high-quality answer to the research objective?
-Call `assess` with your judgment."""
+Is this sufficient? Call `assess`."""
 
     kwargs = {}
     if fast_mode:
@@ -274,15 +273,17 @@ of the search space.
 Rules:
 - Never repeat queries that already produced results
 - Decompose the search space along whatever dimensions are natural for this domain
-- Use nimble_map on directory/listing sites found in evidence to discover more pages
 - Use varied query formulations (synonyms, related terms, alternative phrasings)
 - Generate 15-20 search steps per round
 - Each step should target a unique sub-area not yet covered
+- Always set max_results to 20 or higher for maximum coverage per query
+- For queries about places, locations, or geographic entities, use focus: "location" or "geo"
+- Use ONLY nimble_search steps for follow-up rounds (nimble_extract is too slow for bulk collection)
+- Exception: include 2-3 nimble_map steps ONLY for directory/listing sites found in evidence (e.g., healthgrades.com, yelp.com, zocdoc.com) to discover paginated listing URLs
 
 Available tools (use exact param names):
-- nimble_search: params must include "query" (single string), optional "focus" and "max_results"
-- nimble_extract: params must include "url" (single string URL)
-- nimble_map: params must include "url" (single string URL)
+- nimble_search: params must include "query" (single string), "max_results" (integer, use 20+), optional "focus" ("general", "location", "geo", "news", "shopping")
+- nimble_map: params must include "url" (single string URL) — use sparingly, only for directory sites
 
 IMPORTANT: Each step's params must use singular "query" (not "queries") and "url" (not "urls").
 
@@ -295,6 +296,7 @@ async def create_followup_plan(
     evidence: list[EvidenceItem],
     suggested_queries: Optional[list[str]] = None,
     fast_mode: bool = False,
+    iteration: int = 0,
 ) -> Optional[ResearchPlan]:
     """Generate a follow-up research plan to deepen evidence collection."""
     global _plan_result
@@ -367,7 +369,10 @@ async def create_followup_plan(
     if suggested_queries:
         suggestions = "\nSuggested follow-up queries from assessment:\n" + "\n".join(f"- {q}" for q in suggested_queries)
 
+    rec_max = 20 if iteration < 2 else 30
     user_prompt = f"""Research objective: {skill.user_objective}
+
+This is deepening round {iteration + 1}. Use max_results: {rec_max} for all search steps.
 
 Already collected: {len(evidence)} evidence items from these domains:
 {domain_summary}
