@@ -12,6 +12,25 @@ from ..tools.registry import ToolRegistry
 
 logger = get_logger(__name__)
 
+_VALID_FOCUS = {"general", "news", "coding", "academic", "shopping", "social", "geo", "location"}
+
+
+def _normalize_step_params(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Fix common parameter mistakes from the planner LLM."""
+    if "queries" in params and "query" not in params:
+        val = params.pop("queries")
+        params["query"] = val[0] if isinstance(val, list) else val
+    if "urls" in params and "url" not in params:
+        val = params.pop("urls")
+        params["url"] = val[0] if isinstance(val, list) else val
+    if isinstance(params.get("query"), list):
+        params["query"] = params["query"][0] if params["query"] else ""
+    if isinstance(params.get("url"), list):
+        params["url"] = params["url"][0] if params["url"] else ""
+    if tool_name == "nimble_search" and params.get("focus") not in _VALID_FOCUS:
+        params["focus"] = "general"
+    return params
+
 
 async def execute_research(
     config: SessionConfig,
@@ -35,6 +54,7 @@ async def execute_research(
                 params = dict(step.params)
                 if step.wsa_agent_name:
                     params["agent_name"] = step.wsa_agent_name
+                params = _normalize_step_params(step.tool.value, params)
 
                 result = await asyncio.wait_for(
                     registry.dispatch(step.tool.value, params),

@@ -83,7 +83,13 @@ class JsonStorageBackend:
 
     async def insert_evidence(self, item: EvidenceItem) -> None:
         d = self._session_dir(str(item.session_id))
-        self._append_json(d / "evidence.json", item.model_dump(mode="json"))
+        path = d / "evidence.json"
+        # Deduplicate by source_url
+        if item.source_url:
+            existing = self._read_json(path) or []
+            if any(e.get("source_url") == item.source_url for e in existing):
+                return  # skip duplicate URL
+        self._append_json(path, item.model_dump(mode="json"))
 
     async def get_evidence(self, session_id: str) -> list[EvidenceItem]:
         data = self._read_json(self._session_dir(session_id) / "evidence.json")

@@ -16,7 +16,7 @@ from typing import Any, Optional
 from ..agents.analyst import analyze_and_report
 from ..agents.intake import normalize_request
 from ..agents.monitor import BudgetMonitor
-from ..agents.planner import create_plan
+from ..agents.planner import assess_evidence_sufficiency, create_followup_plan, create_plan
 from ..agents.researcher import execute_research
 from ..agents.skill_builder import build_skill
 from ..agents.verifier import verify_claims
@@ -26,7 +26,7 @@ from ..infra.events import EventStream
 from ..infra.hooks import HookContext, HookDecision, HookRegistry, build_hooks
 from ..infra.logging import get_logger
 from ..models.discovery import AgentFitScore
-from ..models.enums import ExecutionMode, ExecutionStage
+from ..models.enums import ExecutionMode, ExecutionStage, TimeBudget
 from ..models.output import ResearchReport, SessionSummary
 from ..models.session import SessionConfig, UserResearchRequest
 from ..nimble.provider import NimbleProvider
@@ -59,6 +59,13 @@ async def run_research(
 
     # --- Stage 1: Intake ---
     config = normalize_request(request)
+    fast_mode = request.fast_mode or request.time_budget in (
+        TimeBudget.QUICK_30S,
+        TimeBudget.SHORT_2M,
+        TimeBudget.MEDIUM_5M,
+    )
+    if fast_mode:
+        logger.info("fast_mode_enabled", budget=request.time_budget.value)
     ctx = RunContext(session_id=config.session_id, storage=storage)
     set_context(ctx)
 
@@ -106,27 +113,10 @@ async def run_research(
     wsa_matches: list[AgentFitScore] = []
 
     try:
-        # --- Stage 0b: WSA Strategy ---
+        # --- Stage 0b: Initial Discovery ---
         monitor.set_stage(ExecutionStage.DISCOVERY)
         if event_stream:
             await event_stream.stage_entered("discovery", monitor.elapsed_seconds)
-
-        if config.execution_mode != ExecutionMode.RAW_TOOLS:
-            strategy = ExecutionStrategy(catalog)
-            mode, wsa_matches = await strategy.resolve(
-                target_domains=config.target_domains,
-                target_verticals=[],
-                target_entity_types=[],
-                required_output_fields=[],
-                available_input_params={},
-            )
-            if config.execution_mode == ExecutionMode.HYBRID:
-                config = config.model_copy(update={"execution_mode": mode})
-            logger.info(
-                "execution_strategy",
-                mode=config.execution_mode.value,
-                wsa_matches=len(wsa_matches),
-            )
         await monitor.create_checkpoint(ExecutionStage.DISCOVERY, 1)
 
         # --- Stage 2: Skill Generation ---
@@ -137,11 +127,64 @@ async def run_research(
         if monitor.is_over_budget:
             raise AgentTimeoutError("skill_gen", int(monitor.elapsed_seconds * 1000))
 
+        skill_timeout = max(30, monitor.remaining_seconds * 0.15) if fast_mode else max(90, monitor.remaining_seconds * 0.4)
         skill = await asyncio.wait_for(
-            build_skill(config),
-            timeout=min(30, monitor.remaining_seconds),
+            build_skill(config, fast_mode=fast_mode),
+            timeout=skill_timeout,
         )
         logger.info("skill_generated", title=skill.title, subquestions=len(skill.subquestions))
+
+        # --- Stage 2b: WSA Strategy (budget >= 10m only) ---
+        # WSAs take 3-7s per call — only use with sufficient budget
+        use_wsa = config.time_budget not in (
+            TimeBudget.QUICK_30S, TimeBudget.SHORT_2M, TimeBudget.MEDIUM_5M,
+        ) and config.execution_mode != ExecutionMode.RAW_TOOLS
+
+        if use_wsa:
+            strategy = ExecutionStrategy(catalog)
+            # Build domain list from skill spec + target entities + config
+            skill_domains = list(skill.source_policy.domain_include or []) + config.target_domains
+
+            # Filter to real domains only (must contain a dot — skip "technology", "artificial intelligence", etc.)
+            skill_domains = [d for d in skill_domains if "." in d]
+
+            # Infer domains from target entities (e.g., "Walmart Dallas TX" → "walmart.com")
+            for entity in (skill.target_entities or []):
+                entity_lower = entity.lower()
+                for agent in catalog.all_agents:
+                    if agent.domain:
+                        domain_base = agent.domain.lower().replace("www.", "").split(".")[0]
+                        if domain_base in entity_lower and agent.domain not in skill_domains:
+                            skill_domains.append(agent.domain)
+
+            # Skip WSA entirely if no real domains found — don't waste time scoring
+            if not skill_domains:
+                logger.info("wsa_skipped", reason="no_matching_domains")
+                use_wsa = False
+
+        if use_wsa:
+            if skill_domains:
+                logger.info("wsa_domains_resolved", domains=skill_domains[:10])
+            mode, wsa_matches = await strategy.resolve(
+                target_domains=skill_domains,
+                target_verticals=[skill.task_type.value] if skill.task_type else [],
+                target_entity_types=skill.likely_source_types or [],
+                required_output_fields=[],
+                available_input_params={"query": True, "url": True, "keyword": True},
+            )
+            if config.execution_mode == ExecutionMode.HYBRID:
+                config = config.model_copy(update={"execution_mode": mode})
+            logger.info(
+                "wsa_strategy",
+                mode=config.execution_mode.value,
+                wsa_matches=len(wsa_matches),
+                strong=[s.agent_name for s in wsa_matches if s.is_strong_match],
+            )
+
+            # Input params are already inferred by the scorer from entity_type
+            # No runtime get_agent() calls needed — params are in match.input_params_hint
+        else:
+            logger.info("wsa_skipped", reason="budget_too_low" if not use_wsa else "raw_tools_mode")
         await monitor.create_checkpoint(ExecutionStage.SKILL_GEN, 2)
 
         # --- Gate: Skill Approval ---
@@ -170,9 +213,10 @@ async def run_research(
         if monitor.is_over_budget:
             raise AgentTimeoutError("planning", int(monitor.elapsed_seconds * 1000))
 
+        plan_timeout = max(30, monitor.remaining_seconds * 0.15) if fast_mode else max(90, monitor.remaining_seconds * 0.4)
         plan = await asyncio.wait_for(
-            create_plan(config, skill, wsa_matches),
-            timeout=min(30, monitor.remaining_seconds),
+            create_plan(config, skill, wsa_matches, fast_mode=fast_mode),
+            timeout=plan_timeout,
         )
         await storage.save_plan(plan)
         logger.info("plan_created", steps=plan.total_steps)
@@ -195,9 +239,10 @@ async def run_research(
         if monitor.is_over_budget:
             raise AgentTimeoutError("research", int(monitor.elapsed_seconds * 1000))
 
+        research_pct = 0.7 if fast_mode else 0.6
         research_result = await asyncio.wait_for(
             execute_research(config, plan, registry),
-            timeout=max(10, monitor.remaining_seconds * 0.6),
+            timeout=max(30, monitor.remaining_seconds * research_pct),
         )
         evidence = await storage.get_evidence(session_id_str)
 
@@ -224,7 +269,12 @@ async def run_research(
             await event_stream.budget_warning(100 - monitor.budget_utilization_pct)
 
         # --- Stage 6: Extraction (optional deep extract) ---
-        if not monitor.should_skip_stage(ExecutionStage.EXTRACTION):
+        # Skip extraction if search already yielded rich evidence
+        skip_extraction = len(evidence) >= 80 and fast_mode
+        if skip_extraction:
+            logger.info("extraction_skipped", reason="sufficient_search_evidence", evidence_count=len(evidence))
+
+        if not skip_extraction and not monitor.should_skip_stage(ExecutionStage.EXTRACTION):
             monitor.set_stage(ExecutionStage.EXTRACTION)
             if event_stream:
                 await event_stream.stage_entered("extraction", monitor.elapsed_seconds)
@@ -258,6 +308,85 @@ async def run_research(
                     logger.warning("extraction_failed", url=url, error=str(e))
             await monitor.create_checkpoint(ExecutionStage.EXTRACTION, 6)
 
+        # --- Stage 6b: Evidence Deepening (budget >= 10m only) ---
+        # Reserve 25% of total budget for analysis (min 120s)
+        analysis_reserve = max(120, config.policy.stop_conditions.wall_clock_seconds * 0.25)
+        can_deepen = (
+            config.time_budget in (TimeBudget.STANDARD_10M, TimeBudget.DEEP_30M, TimeBudget.EXHAUSTIVE_1H)
+            and not monitor.is_over_budget
+            and monitor.remaining_seconds > analysis_reserve
+        )
+
+        if can_deepen:
+            iteration = 0
+            prev_count = len(evidence)
+            available = monitor.remaining_seconds - analysis_reserve
+            logger.info("deepening_started", reserve=f"{analysis_reserve:.0f}s", available=f"{available:.0f}s")
+
+            while monitor.remaining_seconds > analysis_reserve:
+                if event_stream:
+                    await event_stream.stage_entered(f"deepening_round_{iteration + 1}", monitor.elapsed_seconds)
+
+                try:
+                    assessment = await asyncio.wait_for(
+                        assess_evidence_sufficiency(config, skill, evidence, fast_mode=fast_mode),
+                        timeout=min(30, monitor.remaining_seconds * 0.1),
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("sufficiency_check_timeout")
+                    break
+
+                if assessment["sufficient"]:
+                    logger.info("evidence_sufficient", reason=assessment["reason"], evidence_count=len(evidence))
+                    break
+
+                logger.info("evidence_insufficient", reason=assessment["reason"], suggestions=len(assessment.get("suggested_queries", [])))
+
+                try:
+                    followup_plan = await asyncio.wait_for(
+                        create_followup_plan(
+                            config, skill, evidence,
+                            suggested_queries=assessment.get("suggested_queries", []),
+                            fast_mode=fast_mode,
+                            iteration=iteration,
+                        ),
+                        timeout=min(30, monitor.remaining_seconds * 0.15),
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("followup_plan_timeout")
+                    break
+
+                if not followup_plan or followup_plan.total_steps == 0:
+                    logger.info("no_followup_steps")
+                    break
+
+                try:
+                    result = await asyncio.wait_for(
+                        execute_research(config, followup_plan, registry),
+                        timeout=max(30, monitor.remaining_seconds * 0.4),
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("deepening_research_timeout")
+                    break
+
+                evidence = await storage.get_evidence(session_id_str)
+                new_count = len(evidence)
+                growth = (new_count - prev_count) / max(prev_count, 1)
+                logger.info(
+                    "deepening_iteration",
+                    iteration=iteration,
+                    new_evidence=new_count - prev_count,
+                    total=new_count,
+                    growth=f"{growth:.1%}",
+                )
+
+                if growth < 0.05:
+                    logger.info("deepening_converged", growth=f"{growth:.1%}")
+                    break
+
+                prev_count = new_count
+                iteration += 1
+
         # --- Stage 7: Analysis ---
         monitor.set_stage(ExecutionStage.ANALYSIS)
         if event_stream:
@@ -266,9 +395,10 @@ async def run_research(
         if monitor.is_over_budget:
             raise AgentTimeoutError("analysis", int(monitor.elapsed_seconds * 1000))
 
+        analysis_pct = 0.8 if fast_mode else 0.7
         await asyncio.wait_for(
-            analyze_and_report(config, skill, registry),
-            timeout=max(15, monitor.remaining_seconds * 0.7),
+            analyze_and_report(config, skill, registry, fast_mode=fast_mode),
+            timeout=max(60, monitor.remaining_seconds * analysis_pct),
         )
         claims = await storage.get_claims(session_id_str)
         logger.info("analysis_complete", claims=len(claims))
@@ -297,7 +427,7 @@ async def run_research(
                 await event_stream.stage_entered("verification", monitor.elapsed_seconds)
             try:
                 await asyncio.wait_for(
-                    verify_claims(config, registry),
+                    verify_claims(config, registry, fast_mode=fast_mode),
                     timeout=max(10, monitor.remaining_seconds * 0.5),
                 )
             except asyncio.TimeoutError:

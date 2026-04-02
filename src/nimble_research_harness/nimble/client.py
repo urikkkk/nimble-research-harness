@@ -33,7 +33,7 @@ TIMEOUTS = {
     "extract": 60.0,
     "map": 60.0,
     "crawl": 300.0,
-    "agents": 120.0,
+    "agents": 30.0,
     "tasks": 30.0,
 }
 
@@ -143,9 +143,9 @@ class NimbleClient:
 
     @nimble_retry
     async def list_agents(
-        self, query: Optional[str] = None, limit: int = 100
+        self, query: Optional[str] = None, limit: int = 100, offset: int = 0
     ) -> list[AgentSummary]:
-        params: dict[str, Any] = {"limit": limit, "privacy": "all"}
+        params: dict[str, Any] = {"limit": limit, "privacy": "all", "offset": offset}
         if query:
             params["search"] = query
         data = await self._request("GET", "/agents", timeout_key="agents", params=params)

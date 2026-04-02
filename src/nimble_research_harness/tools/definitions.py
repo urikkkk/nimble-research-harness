@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from typing import Any
@@ -19,6 +20,28 @@ from ..nimble.types import (
 )
 from .registry import ToolDefinition, ToolRegistry
 
+_VALID_FOCUS = {"general", "news", "coding", "academic", "shopping", "social", "geo", "location"}
+
+_MIN_CONTENT_LENGTH = 50  # Below this, extraction likely returned a JS shell
+
+_TAG_RE = re.compile(r"</?(?:item|parameter|result|entry|price|product)[^>]*>", re.IGNORECASE)
+
+
+def _strip_tags(text: str) -> str:
+    """Remove common XML/HTML wrapper tags that LLMs inject into content."""
+    return _TAG_RE.sub("", text).strip()
+
+
+def _ensure_list(val: Any) -> list[str]:
+    """Coerce a string to a list; split on newlines if present. Strip XML tags."""
+    if isinstance(val, list):
+        return [_strip_tags(v) if isinstance(v, str) else v for v in val]
+    if isinstance(val, str):
+        cleaned = _strip_tags(val)
+        items = [line.strip().lstrip("- ").lstrip("* ") for line in cleaned.split("\n") if line.strip()]
+        return items if items else [cleaned]
+    return []
+
 
 def build_registry(provider: NimbleProvider) -> ToolRegistry:
     """Create a ToolRegistry with all Nimble tool definitions wired to the provider."""
@@ -28,6 +51,8 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
     async def handle_search(params: dict[str, Any]) -> dict[str, Any]:
         start = time.time()
         ctx = get_context()
+        if params.get("focus", "general") not in _VALID_FOCUS:
+            params["focus"] = "general"
         search_params = SearchParams(**params)
         resp = await provider.search(search_params)
         latency = int((time.time() - start) * 1000)
@@ -92,24 +117,34 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
     async def handle_extract(params: dict[str, Any]) -> dict[str, Any]:
         start = time.time()
         ctx = get_context()
+
         extract_params = ExtractParams(**params)
         resp = await provider.extract(extract_params)
-        latency = int((time.time() - start) * 1000)
-
         content = resp.markdown or resp.html or ""
+
+        # If content is too short, retry with JS rendering enabled
+        if len(content.strip()) < _MIN_CONTENT_LENGTH and not extract_params.render:
+            params["render"] = True
+            retry_params = ExtractParams(**params)
+            resp = await provider.extract(retry_params)
+            content = resp.markdown or resp.html or ""
+
+        latency = int((time.time() - start) * 1000)
+        content_is_substantive = len(content.strip()) >= _MIN_CONTENT_LENGTH
+
         await ctx.storage.insert_tool_call(
             ToolCallRecord(
                 session_id=ctx.session_id,
                 tool=ToolName.EXTRACT,
                 params=params,
-                status=ToolCallStatus.SUCCESS,
-                response_summary=f"Extracted {len(content)} chars",
-                result_count=1 if content else 0,
+                status=ToolCallStatus.SUCCESS if content_is_substantive else ToolCallStatus.PARTIAL,
+                response_summary=f"Extracted {len(content)} chars" if content_is_substantive else "Empty/minimal content",
+                result_count=1 if content_is_substantive else 0,
                 latency_ms=latency,
             )
         )
 
-        if content:
+        if content_is_substantive:
             await ctx.storage.insert_evidence(
                 EvidenceItem(
                     session_id=ctx.session_id,
@@ -247,25 +282,93 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
     )
 
     # --- nimble_agents_run ---
+    # Cache the working search param name per agent (learned on first call)
+    _agent_param_cache: dict[str, str] = {}
+    _SEARCH_ALIASES = {"keyword", "query", "search_query", "search_term", "q"}
+    _SEARCH_TRY_ORDER = ["keyword", "search_query", "query", "q"]
+
     async def handle_agents_run(params: dict[str, Any]) -> dict[str, Any]:
         start = time.time()
         ctx = get_context()
         agent_name = params.pop("agent_name")
-        resp = await provider.run_agent(agent_name, params)
+
+        # Normalize common param name variations
+        if "zip_code" in params and "zipcode" not in params:
+            params["zipcode"] = params.pop("zip_code")
+        if "zip" in params and "zipcode" not in params:
+            params["zipcode"] = params.pop("zip")
+
+        # Extract the search value from whichever alias the planner used
+        search_value = None
+        for alias in _SEARCH_ALIASES:
+            if alias in params:
+                search_value = params.pop(alias)
+                break
+
+        if search_value is not None:
+            # Check cache first — zero retries if we've seen this agent before
+            cached = _agent_param_cache.get(agent_name)
+            if cached:
+                params[cached] = search_value
+                resp = await provider.run_agent(agent_name, params)
+            else:
+                # First call to this agent — discover the right param name
+                last_err = None
+                for param_name in _SEARCH_TRY_ORDER:
+                    try:
+                        test_params = {**params, param_name: search_value}
+                        resp = await provider.run_agent(agent_name, test_params)
+                        _agent_param_cache[agent_name] = param_name  # cache for all future calls
+                        params = test_params
+                        break
+                    except Exception as e:
+                        last_err = e
+                        continue
+                else:
+                    raise last_err or Exception(f"No valid search param for {agent_name}")
+        else:
+            resp = await provider.run_agent(agent_name, params)
         latency = int((time.time() - start) * 1000)
+
+        # Extract structured items from WSA response
+        items = []
+        if isinstance(resp.data, dict):
+            items = resp.data.get("parsing", resp.data.get("parsed_items", resp.data.get("results", [])))
+        elif isinstance(resp.data, list):
+            items = resp.data
+        if not isinstance(items, list):
+            items = []
 
         await ctx.storage.insert_tool_call(
             ToolCallRecord(
                 session_id=ctx.session_id,
                 tool=ToolName.AGENTS_RUN,
                 params={"agent_name": agent_name, **params},
-                status=ToolCallStatus.SUCCESS,
-                response_summary=f"WSA {agent_name}: {resp.status}",
+                status=ToolCallStatus.SUCCESS if items else ToolCallStatus.PARTIAL,
+                response_summary=f"WSA {agent_name}: {len(items)} items",
+                result_count=len(items),
                 latency_ms=latency,
             )
         )
 
-        return {"task_id": resp.task_id, "status": resp.status, "data": resp.data}
+        # Store each WSA result as evidence
+        import json as _json
+        for item in items[:50]:  # cap at 50 items per WSA call
+            content = _json.dumps(item, default=str)[:2000] if isinstance(item, dict) else str(item)[:2000]
+            title = item.get("product_name", item.get("name", item.get("title", "")))[:200] if isinstance(item, dict) else ""
+            url = item.get("product_url", item.get("url", item.get("link", ""))) if isinstance(item, dict) else ""
+            await ctx.storage.insert_evidence(
+                EvidenceItem(
+                    session_id=ctx.session_id,
+                    source_url=url or f"wsa://{agent_name}",
+                    title=title,
+                    content=content,
+                    content_type="wsa_result",
+                    relevance_score=0.9,  # WSA data is high quality
+                )
+            )
+
+        return {"task_id": resp.task_id, "status": resp.status, "items_count": len(items), "data": resp.data}
 
     registry.register(
         ToolDefinition(
@@ -326,7 +429,7 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
                 "id": str(e.evidence_id),
                 "url": e.source_url,
                 "title": e.title,
-                "content": e.content[:500],
+                "content": _strip_tags(e.content[:2000]),
                 "type": e.content_type,
                 "relevance": e.relevance_score,
             }
@@ -395,11 +498,11 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
             session_id=ctx.session_id,
             title=params.get("title", "Research Report"),
             executive_summary=params.get("executive_summary", ""),
-            key_findings=params.get("key_findings", []),
+            key_findings=_ensure_list(params.get("key_findings", [])),
             detailed_analysis=params.get("detailed_analysis", ""),
             methodology=params.get("methodology", ""),
-            known_unknowns=params.get("known_unknowns", []),
-            limitations=params.get("limitations", []),
+            known_unknowns=_ensure_list(params.get("known_unknowns", [])),
+            limitations=_ensure_list(params.get("limitations", [])),
         )
         await ctx.storage.save_report(report)
         return {"report_id": str(report.report_id), "status": "ok"}

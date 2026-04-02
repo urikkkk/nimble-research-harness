@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..models.discovery import AgentFitScore, WSACandidate
+from .catalog import infer_wsa_input_params
 
 
 def score_candidate(
@@ -68,11 +69,20 @@ def score_candidate(
     else:
         input_score = 0.5
 
+    # Infer input params from entity_type (no runtime API call needed)
+    inferred_params = infer_wsa_input_params(candidate.entity_type, candidate.domain)
+    params_hint = "; ".join(f'"{k}": {v}' for k, v in inferred_params.items())
+
     return AgentFitScore(
         agent_name=candidate.name,
+        agent_domain=candidate.domain,
+        agent_entity_type=candidate.entity_type,
+        agent_description=candidate.description,
         domain_match=domain_score,
         entity_type_match=entity_score,
         vertical_match=vertical_score,
         output_field_coverage=output_score,
         input_feasibility=input_score,
+        input_properties=inferred_params,
+        input_params_hint=params_hint,
     )

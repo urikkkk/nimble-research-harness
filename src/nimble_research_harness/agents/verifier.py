@@ -10,7 +10,7 @@ from ..models.enums import ClaimConfidence
 from ..models.evidence import VerificationResult
 from ..models.session import SessionConfig
 from ..tools.registry import ToolDefinition, ToolRegistry
-from .base import run_agent_loop
+from .base import FAST_MODEL, run_agent_loop
 
 SYSTEM_PROMPT = """You are a research claim verifier. Your job is to validate claims made during research.
 
@@ -32,6 +32,7 @@ Be conservative — do not upgrade confidence without strong justification."""
 async def verify_claims(
     config: SessionConfig,
     registry: ToolRegistry,
+    fast_mode: bool = False,
 ) -> list[VerificationResult]:
     """Verify claims against collected evidence."""
     results: list[VerificationResult] = []
@@ -106,12 +107,16 @@ Steps:
 Focus on the most important claims first (higher importance scores).
 {"Verify all claims." if verification_budget >= 3 else "Verify key claims only." if verification_budget >= 2 else "Spot-check 1-2 claims."}"""
 
+    kwargs = {}
+    if fast_mode:
+        kwargs["model"] = FAST_MODEL
     await run_agent_loop(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
         registry=registry,
         tool_names=tool_names,
         max_turns=min(10, len(claims) * 2 + 3),
+        **kwargs,
     )
 
     return results

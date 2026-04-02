@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+_VALID_FOCUS = {"general", "news", "coding", "academic", "shopping", "social", "geo", "location"}
+_VALID_DEPTH = {"lite", "fast", "deep"}
 
 
 # --- Search ---
@@ -14,6 +18,20 @@ class SearchParams(BaseModel):
     max_results: int = Field(default=10, ge=1, le=100)
     search_depth: str = Field(default="lite")
     focus: str = Field(default="general")
+
+    @field_validator("focus", mode="before")
+    @classmethod
+    def _sanitize_focus(cls, v: Any) -> str:
+        if isinstance(v, str) and v.lower().strip() in _VALID_FOCUS:
+            return v.lower().strip()
+        return "general"
+
+    @field_validator("search_depth", mode="before")
+    @classmethod
+    def _sanitize_depth(cls, v: Any) -> str:
+        if isinstance(v, str) and v.lower().strip() in _VALID_DEPTH:
+            return v.lower().strip()
+        return "lite"
     include_answer: bool = False
     include_domains: list[str] = Field(default_factory=list)
     exclude_domains: list[str] = Field(default_factory=list)
@@ -120,9 +138,22 @@ class AgentDetails(BaseModel):
     vertical: Optional[str] = None
     entity_type: Optional[str] = None
     domain: Optional[str] = None
-    input_properties: dict[str, Any] = Field(default_factory=dict)
+    input_properties: Any = Field(default_factory=list)  # API returns list, not dict
     output_schema: dict[str, Any] = Field(default_factory=dict)
     feature_flags: dict[str, bool] = Field(default_factory=dict)
+
+    @property
+    def input_params_summary(self) -> str:
+        """Human-readable summary of input params for the planner."""
+        if isinstance(self.input_properties, list):
+            parts = []
+            for p in self.input_properties:
+                name = p.get("name", "?")
+                req = "required" if p.get("required") else "optional"
+                desc = p.get("description", "")[:60]
+                parts.append(f'"{name}" ({req}): {desc}')
+            return "; ".join(parts)
+        return str(self.input_properties)
 
 
 class AgentRunResponse(BaseModel):

@@ -15,6 +15,7 @@ from ..tools.registry import ToolRegistry
 logger = get_logger(__name__)
 
 DEFAULT_MODEL = os.environ.get("NRH_MODEL", "claude-sonnet-4-6")
+FAST_MODEL = os.environ.get("NRH_FAST_MODEL", "claude-haiku-4-5-20251001")
 
 
 @dataclass

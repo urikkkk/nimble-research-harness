@@ -19,7 +19,7 @@ from ..models.skill import (
     SynthesisPolicy,
     VerificationPolicy,
 )
-from .base import AgentResult, run_agent_loop
+from .base import AgentResult, FAST_MODEL, run_agent_loop
 from ..tools.registry import ToolDefinition, ToolRegistry
 
 SYSTEM_PROMPT = """You are a research skill architect. Given a user's research objective and time budget,
@@ -41,7 +41,7 @@ Always call `create_skill_spec` with your complete specification."""
 _skill_result: DynamicSkillSpec | None = None
 
 
-async def build_skill(config: SessionConfig) -> DynamicSkillSpec:
+async def build_skill(config: SessionConfig, fast_mode: bool = False) -> DynamicSkillSpec:
     """Generate a dynamic skill spec for the given session config."""
     global _skill_result
     _skill_result = None
@@ -159,12 +159,16 @@ Report format: {config.report_format.value}
 Design a complete research skill specification for this objective.
 Call `create_skill_spec` with all the details."""
 
+    kwargs = {}
+    if fast_mode:
+        kwargs["model"] = FAST_MODEL
     result = await run_agent_loop(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
         registry=registry,
         tool_names=["create_skill_spec"],
         max_turns=3,
+        **kwargs,
     )
 
     if _skill_result is None:
