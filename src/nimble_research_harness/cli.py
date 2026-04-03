@@ -397,6 +397,45 @@ def research_export(
         console.print(data)
 
 
+@research_app.command("excel")
+def research_excel(
+    session_id: str = typer.Argument(..., help="Session ID"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output file path"),
+):
+    """Export session as McKinsey-level Excel report."""
+    from .reports.excel_export import export_excel
+
+    storage = _get_storage()
+    report_data = asyncio.run(storage.load_report(session_id))
+    if not report_data:
+        console.print(f"[red]No report found for session {session_id}[/red]")
+        raise typer.Exit(1)
+
+    config = asyncio.run(storage.load_session(session_id))
+    claims_data = asyncio.run(storage.get_claims(session_id))
+    evidence_data = asyncio.run(storage.get_evidence(session_id))
+
+    report_dict = report_data.model_dump(mode="json") if hasattr(report_data, "model_dump") else report_data
+    claims_list = [c.model_dump(mode="json") if hasattr(c, "model_dump") else c for c in claims_data]
+    evidence_list = [e.model_dump(mode="json") if hasattr(e, "model_dump") else e for e in evidence_data]
+
+    meta = {
+        "time_budget": config.time_budget.label if config else "",
+        "elapsed_seconds": 0,
+    }
+
+    out_path = output or f"{session_id[:12]}_report.xlsx"
+    export_excel(
+        output_path=out_path,
+        user_query=config.user_query if config else "",
+        report=report_dict,
+        claims=claims_list,
+        evidence=evidence_list,
+        session_meta=meta,
+    )
+    console.print(f"[green]Excel report saved: {out_path}[/green]")
+
+
 @skill_app.command("inspect")
 def skill_inspect(
     session_id: str = typer.Argument(..., help="Session ID"),
