@@ -33,8 +33,22 @@ Consider:
 - Different task types need different strategies (e.g., competitive intel needs comparisons)
 - Subquestions should decompose the objective into searchable units
 - Source types should match the domain (e.g., SEC filings for finance, arxiv for academic)
-- Search strategy should use appropriate focus modes
 - Verification should be proportional to the time budget
+
+CRITICAL — Search Focus Modes:
+You MUST select appropriate focus modes from: general, news, academic, coding, shopping, social.
+Do NOT default everything to "general". Match focus modes to the query type:
+- Financial/regulatory/current events → include "news"
+- Scientific/medical/research → include "academic"
+- Market trends/competitors → include "news" + "general"
+- Technical/engineering → include "coding"
+- Consumer products/pricing → include "shopping"
+- Brand sentiment/social trends → include "social"
+Most queries should use 2-3 focus modes, not just "general".
+
+CRITICAL — Domain Filtering:
+If the research targets specific organizations, include their domains in domain_include.
+For example: SEC research → ["sec.gov", "cftc.gov"]. Company research → ["company.com"].
 
 Always call `create_skill_spec` with your complete specification."""
 
