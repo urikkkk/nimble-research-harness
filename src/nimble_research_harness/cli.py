@@ -739,6 +739,7 @@ def browsecomp_run(
     csv_path: str = typer.Option("benchmarks/browse_comp_test_set.csv", "--csv", help="Path to BrowseComp CSV"),
     resume: Optional[str] = typer.Option(None, "--resume", help="Resume a previous run ID"),
     mock: bool = typer.Option(False, "--mock", help="Use mock provider"),
+    mode: str = typer.Option("standard", "--mode", "-m", help="Mode: standard or deep (multi-hop)"),
 ):
     """Run BrowseComp benchmark: research + grade against ground truth."""
     from .benchmark.browsecomp import load_browsecomp, run_browsecomp
@@ -755,7 +756,7 @@ def browsecomp_run(
     console.print(Panel(
         f"[bold]BrowseComp Benchmark[/bold]\n\n"
         f"Questions: {len(questions)} | Budget: {budget} | Concurrency: {concurrency}\n"
-        f"Provider: {'mock' if mock else 'live'}",
+        f"Mode: [bold]{mode}[/bold] | Provider: {'mock' if mock else 'live'}",
         title="BrowseComp",
         border_style="blue",
     ))
@@ -768,6 +769,7 @@ def browsecomp_run(
             output_dir=output_dir,
             concurrency=concurrency,
             resume_run_id=resume,
+            mode=mode,
         )
 
     result = asyncio.run(_run())
@@ -835,6 +837,59 @@ def browsecomp_list(
                 )
 
     console.print(table)
+
+
+@app.command("deep-research")
+def deep_research_cmd(
+    question: str = typer.Argument(..., help="Question to research (multi-hop)"),
+    max_hops: int = typer.Option(5, "--hops", help="Maximum search-refine iterations"),
+    timeout: int = typer.Option(540, "--timeout", "-t", help="Wall-clock timeout in seconds"),
+    mock: bool = typer.Option(False, "--mock", help="Use mock provider"),
+):
+    """Run deep multi-hop research on a single question (BrowseComp-style)."""
+    from .deepresearch.engine import deep_research
+
+    provider = MockNimbleProvider() if mock else _get_provider()
+
+    console.print(Panel(
+        f"[bold]{question[:100]}[/bold]\n\n"
+        f"Max hops: {max_hops} | Timeout: {timeout}s",
+        title="Deep Research",
+        border_style="magenta",
+    ))
+
+    async def _run():
+        return await deep_research(
+            question=question,
+            provider=provider,
+            max_hops=max_hops,
+            timeout_seconds=timeout,
+        )
+
+    session = asyncio.run(_run())
+
+    # Display results
+    if session.final_answer:
+        console.print(f"\n[bold green]Answer: {session.final_answer}[/bold green]")
+        console.print(f"Confidence: {session.final_confidence:.0%}")
+    else:
+        console.print("\n[bold red]No answer found[/bold red]")
+
+    console.print(f"\nHops: {len(session.hops)} | Searches: {session.total_searches} | "
+                  f"Extracts: {session.total_extracts} | LLM calls: {session.total_llm_calls} | "
+                  f"Candidates: {len(session.candidates)} | Elapsed: {session.elapsed_seconds:.0f}s")
+
+    if session.candidates:
+        console.print("\n[bold]Candidates:[/bold]")
+        for c in sorted(session.candidates, key=lambda x: x.confidence, reverse=True)[:5]:
+            met = len(c.constraints_met)
+            console.print(f"  [{c.confidence:.0%}] {c.answer} (met {met} constraints)")
+
+    if session.constraints:
+        console.print("\n[bold]Constraints:[/bold]")
+        for c in session.constraints:
+            icon = "[green]+[/green]" if c.is_met else "[red]-[/red]"
+            console.print(f"  {icon} [{c.category}] {c.text}")
 
 
 if __name__ == "__main__":
