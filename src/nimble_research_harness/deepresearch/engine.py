@@ -232,25 +232,16 @@ async def deep_research(
         session.candidates = _rank_candidates(session.candidates)
         best = session.candidates[0]
 
-        # Only return if candidate has at least some constraints met
-        if len(best.constraints_met) >= 1 or best.confidence > 0.2:
-            session.final_answer = best.answer
-            session.final_confidence = best.confidence
-            logger.info(
-                "deep_research_best_guess",
-                answer=best.answer,
-                confidence=best.confidence,
-                constraints_met=len(best.constraints_met),
-                hops=len(session.hops),
-            )
-        else:
-            session.final_answer = ""
-            session.final_confidence = 0.0
-            logger.warning(
-                "deep_research_no_good_candidate",
-                best=best.answer,
-                constraints_met=len(best.constraints_met),
-            )
+        # Always return best candidate — a guess is better than "None" for BrowseComp
+        session.final_answer = best.answer
+        session.final_confidence = best.confidence
+        logger.info(
+            "deep_research_best_guess",
+            answer=best.answer,
+            confidence=best.confidence,
+            constraints_met=len(best.constraints_met),
+            hops=len(session.hops),
+        )
     else:
         session.final_answer = ""
         session.final_confidence = 0.0

@@ -94,7 +94,7 @@ EXTRACT_CANDIDATES_PROMPT = """You are extracting potential answers to a complex
 Question: {question}
 
 The answer is expected to be a: **{answer_type}**
-ONLY extract candidates that match this type. For example, if the answer type is "time", only extract times (like "3:50 PM"), not places or names.
+Prefer candidates matching this type, but DO NOT reject candidates just because the type doesn't match perfectly — the type detection may be wrong. Always extract the most plausible answer even if it doesn't match the expected type.
 
 Constraints that the answer must satisfy:
 {constraints}
@@ -111,8 +111,9 @@ Instructions:
 3. For each candidate, note which constraints it appears to satisfy
 4. Rate confidence 0.0-1.0 based on how many constraints are met
 5. Do NOT repeat existing candidates
-6. If no new candidates found, return empty array
+6. If no perfect candidates, still extract PARTIAL matches — a wrong guess is better than no guess
 7. Look carefully in the full page content — answers are often buried in details
+8. ALWAYS try to extract at least one candidate per hop, even with low confidence
 
 Return a JSON array:
 [
@@ -137,7 +138,7 @@ Question: {question}
 Candidate answer: {candidate_answer}
 Expected answer type: {answer_type}
 
-First: Does the candidate match the expected answer type ({answer_type})? If not, it's automatically wrong.
+Note: The expected answer type is {answer_type}, but this may be wrong. Focus on whether the candidate satisfies the constraints, not just the type.
 
 Constraints to verify:
 {constraints}
