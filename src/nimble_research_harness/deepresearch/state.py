@@ -69,6 +69,7 @@ class DeepResearchSession:
     """Full session state for a multi-hop deep research run."""
 
     question: str
+    expected_answer_type: str = "other"  # person, place, time, date, number, title, organization, etc.
     constraints: list[Constraint] = field(default_factory=list)
     hops: list[HopState] = field(default_factory=list)
     candidates: list[Candidate] = field(default_factory=list)

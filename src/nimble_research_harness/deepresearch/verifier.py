@@ -20,6 +20,7 @@ async def verify_candidate(
     candidate: Candidate,
     constraints: list[Constraint],
     findings: list[SearchFinding],
+    answer_type: str = "other",
 ) -> tuple[bool, float, list[Constraint]]:
     """Verify a candidate answer against all constraints.
 
@@ -49,6 +50,7 @@ async def verify_candidate(
         messages=[{"role": "user", "content": VERIFY_PROMPT.format(
             question=question,
             candidate_answer=candidate.answer,
+            answer_type=answer_type,
             constraints="\n".join(f"- [{c.category}] {c.text}" for c in constraints),
             evidence=evidence_text,
         )}],

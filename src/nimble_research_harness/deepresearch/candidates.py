@@ -51,6 +51,7 @@ async def generate_initial_queries(
     question: str,
     constraints: list[Constraint],
     num_queries: int = 6,
+    answer_type: str = "other",
 ) -> list[str]:
     """Generate first-hop search queries from constraints."""
     client = anthropic.AsyncAnthropic()
@@ -60,6 +61,7 @@ async def generate_initial_queries(
             question=question,
             constraints=_format_constraints(constraints),
             num_queries=num_queries,
+            answer_type=answer_type,
         )}],
         max_tokens=1024,
     )
@@ -79,6 +81,7 @@ async def generate_refined_queries(
     search_history: list[str],
     gap_analysis: str,
     num_queries: int = 6,
+    answer_type: str = "other",
 ) -> list[str]:
     """Generate refined queries based on what we've learned."""
     client = anthropic.AsyncAnthropic()
@@ -91,6 +94,7 @@ async def generate_refined_queries(
             candidates=_format_candidates(candidates),
             gap_analysis=gap_analysis,
             num_queries=num_queries,
+            answer_type=answer_type,
         )}],
         max_tokens=1024,
     )
@@ -110,6 +114,7 @@ async def extract_candidates(
     findings: list[SearchFinding],
     existing_candidates: list[Candidate],
     hop: int = 0,
+    answer_type: str = "other",
 ) -> list[Candidate]:
     """Extract potential answers from search findings."""
     client = anthropic.AsyncAnthropic()
@@ -120,6 +125,7 @@ async def extract_candidates(
             constraints=_format_constraints(constraints),
             findings=_format_findings(findings),
             existing_candidates=_format_candidates(existing_candidates),
+            answer_type=answer_type,
         )}],
         max_tokens=2048,
     )
@@ -158,6 +164,7 @@ async def analyze_gaps(
     constraints: list[Constraint],
     search_history: list[str],
     candidates: list[Candidate],
+    answer_type: str = "other",
 ) -> str:
     """Analyze what's missing and suggest next search direction."""
     client = anthropic.AsyncAnthropic()
@@ -168,6 +175,7 @@ async def analyze_gaps(
             constraints=_format_constraints(constraints),
             search_history="\n".join(f"- {q}" for q in search_history[-15:]),
             candidates=_format_candidates(candidates),
+            answer_type=answer_type,
         )}],
         max_tokens=512,
     )
