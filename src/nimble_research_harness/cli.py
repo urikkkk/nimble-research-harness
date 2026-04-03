@@ -364,6 +364,39 @@ def research_report(
     console.print(formatted)
 
 
+@research_app.command("export")
+def research_export(
+    session_id: str = typer.Argument(..., help="Session ID"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output file path"),
+):
+    """Export session as structured JSON (reference format: input, output, outputBasis)."""
+    from .reports.formatter import export_session_json
+
+    storage = _get_storage()
+    report = asyncio.run(storage.load_report(session_id))
+    if not report:
+        console.print(f"[red]No report found for session {session_id}[/red]")
+        raise typer.Exit(1)
+
+    config = asyncio.run(storage.load_session(session_id))
+    claims_data = asyncio.run(storage.get_claims(session_id))
+    evidence_data = asyncio.run(storage.get_evidence(session_id))
+
+    result = export_session_json(
+        user_query=config.user_query if config else "",
+        report=report,
+        claims=claims_data,
+        evidence=evidence_data,
+    )
+
+    data = json.dumps(result, indent=2, default=str)
+    if output:
+        Path(output).write_text(data)
+        console.print(f"[green]Exported to {output}[/green]")
+    else:
+        console.print(data)
+
+
 @skill_app.command("inspect")
 def skill_inspect(
     session_id: str = typer.Argument(..., help="Session ID"),

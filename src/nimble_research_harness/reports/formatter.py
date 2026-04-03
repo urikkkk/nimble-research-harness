@@ -116,6 +116,78 @@ def _format_source_pack(report: ResearchReport) -> str:
     return "\n".join(lines)
 
 
+def export_session_json(
+    user_query: str,
+    report: ResearchReport,
+    claims: list[Any],
+    evidence: list[Any],
+) -> dict[str, Any]:
+    """Export session in the reference JSON format: {input, output, outputBasis}.
+
+    This matches the structure from the reference benchmark file with:
+    - input: the original user query
+    - output: structured research findings (from report + claims)
+    - outputBasis: per-field citations with URLs, excerpts, reasoning, confidence
+    """
+    # Build output from report's structured_output or fall back to report fields
+    output = {}
+    if report.structured_output:
+        output = dict(report.structured_output)
+    else:
+        output = {
+            "executive_summary": report.executive_summary,
+            "key_findings": report.key_findings,
+            "detailed_analysis": report.detailed_analysis,
+            "known_unknowns": report.known_unknowns,
+            "limitations": report.limitations,
+            "methodology": report.methodology,
+        }
+
+    # Build outputBasis from claims with citations
+    output_basis = []
+    for claim in claims:
+        c = claim if isinstance(claim, dict) else claim.model_dump(mode="json")
+        basis_entry: dict[str, Any] = {
+            "field": c.get("category", "key_findings"),
+            "citations": [],
+            "reasoning": c.get("statement", ""),
+            "confidence": c.get("confidence", "unresolved"),
+        }
+
+        # Build citations from source_urls + excerpts
+        source_urls = c.get("source_urls", [])
+        excerpts = c.get("excerpts", [])
+
+        if source_urls:
+            for i, url in enumerate(source_urls):
+                citation = {
+                    "title": url.split("/")[-1][:60] if "/" in url else url[:60],
+                    "url": url,
+                    "excerpts": [excerpts[i]] if i < len(excerpts) else [],
+                }
+                basis_entry["citations"].append(citation)
+        elif c.get("evidence_ids"):
+            # Resolve from evidence list
+            eid_set = set(str(eid) for eid in c.get("evidence_ids", []))
+            for e in evidence:
+                ev = e if isinstance(e, dict) else e.model_dump(mode="json")
+                if str(ev.get("evidence_id", "")) in eid_set:
+                    citation = {
+                        "title": (ev.get("title") or ev.get("source_url", ""))[:80],
+                        "url": ev.get("source_url", ""),
+                        "excerpts": [ev.get("content", "")[:500]] if ev.get("content") else [],
+                    }
+                    basis_entry["citations"].append(citation)
+
+        output_basis.append(basis_entry)
+
+    return {
+        "input": user_query,
+        "output": output,
+        "outputBasis": output_basis,
+    }
+
+
 def format_summary(summary: SessionSummary) -> str:
     return "\n".join([
         f"Session: {summary.session_id}",

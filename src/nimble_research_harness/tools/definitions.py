@@ -515,6 +515,10 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
         from ..models.output import ResearchReport
 
         ctx = get_context()
+
+        # Build structured_output from all params (the full data, not just report fields)
+        structured_output = {k: v for k, v in params.items() if k not in ("title",)}
+
         report = ResearchReport(
             session_id=ctx.session_id,
             title=params.get("title", "Research Report"),
@@ -524,6 +528,7 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
             methodology=params.get("methodology", ""),
             known_unknowns=_ensure_list(params.get("known_unknowns", [])),
             limitations=_ensure_list(params.get("limitations", [])),
+            structured_output=structured_output,
         )
         await ctx.storage.save_report(report)
         return {"report_id": str(report.report_id), "status": "ok"}

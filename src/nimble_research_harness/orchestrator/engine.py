@@ -519,6 +519,19 @@ async def run_research(
             wsa_agents_used=[s.agent_name for s in wsa_matches if s.is_strong_match],
         )
         await storage.save_summary(summary)
+
+        # Auto-save reference-format JSON export
+        from ..reports.formatter import export_session_json
+        export_data = export_session_json(
+            user_query=config.user_query,
+            report=report if report else ResearchReport(session_id=config.session_id, title=""),
+            claims=final_claims,
+            evidence=evidence,
+        )
+        import json as _json
+        export_path = storage._session_dir(session_id_str) / "export.json"
+        export_path.write_text(_json.dumps(export_data, indent=2, default=str))
+
         await monitor.create_checkpoint(ExecutionStage.COMPLETED, 9)
 
         if event_stream:
