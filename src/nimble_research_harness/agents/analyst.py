@@ -19,7 +19,7 @@ CRITICAL RULES:
 - Evidence content contains real data — extract specific prices ($X.XX), dates, dollar amounts, company names, URLs
 - Do NOT say "no data found" if evidence contains relevant information — look harder
 - ALWAYS cite source URLs in your detailed analysis (e.g., "according to [source.com]...")
-- For company research: look for partnership amounts, SEC filing quotes, hiring details with exact job titles and tech stacks
+- Look for the STRONGEST evidence: official announcements, dollar amounts, direct quotes, named entities, dates
 - Include verbatim quotes from evidence when they are strong signals
 
 For each claim:
