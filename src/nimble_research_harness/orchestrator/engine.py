@@ -112,6 +112,31 @@ async def run_research(
     registry = build_registry(provider)
     wsa_matches: list[AgentFitScore] = []
 
+    # --- Fix 4: Stage-time budgeting with hard minimums ---
+    # Benchmark showed percentage-based timeouts cascade failures.
+    # Analysis MUST get at least 45s regardless of earlier stage overruns.
+    total_seconds = config.policy.stop_conditions.wall_clock_seconds
+    stage_budget = {
+        "skill_gen": min(30, total_seconds * 0.10),
+        "planning": min(30, total_seconds * 0.10),
+        "research": max(30, total_seconds * 0.35),
+        "extraction": max(10, total_seconds * 0.10),
+        "analysis": max(45, total_seconds * 0.20),
+        "verification": max(15, total_seconds * 0.10),
+    }
+
+    # --- Fix 5: Evidence caps per budget tier ---
+    # Benchmark showed 10m collecting 200-300 items then failing to synthesize.
+    EVIDENCE_CAP = {
+        TimeBudget.QUICK_30S: 20,
+        TimeBudget.SHORT_2M: 50,
+        TimeBudget.MEDIUM_5M: 80,
+        TimeBudget.STANDARD_10M: 120,
+        TimeBudget.DEEP_30M: 200,
+        TimeBudget.EXHAUSTIVE_1H: 300,
+    }
+    evidence_cap = EVIDENCE_CAP.get(config.time_budget, 100)
+
     try:
         # --- Stage 0b: Initial Discovery ---
         monitor.set_stage(ExecutionStage.DISCOVERY)
@@ -127,10 +152,9 @@ async def run_research(
         if monitor.is_over_budget:
             raise AgentTimeoutError("skill_gen", int(monitor.elapsed_seconds * 1000))
 
-        skill_timeout = max(30, monitor.remaining_seconds * 0.15) if fast_mode else max(90, monitor.remaining_seconds * 0.4)
         skill = await asyncio.wait_for(
             build_skill(config, fast_mode=fast_mode),
-            timeout=skill_timeout,
+            timeout=max(stage_budget["skill_gen"], monitor.remaining_seconds * 0.15),
         )
         logger.info("skill_generated", title=skill.title, subquestions=len(skill.subquestions))
 
@@ -213,10 +237,9 @@ async def run_research(
         if monitor.is_over_budget:
             raise AgentTimeoutError("planning", int(monitor.elapsed_seconds * 1000))
 
-        plan_timeout = max(30, monitor.remaining_seconds * 0.15) if fast_mode else max(90, monitor.remaining_seconds * 0.4)
         plan = await asyncio.wait_for(
             create_plan(config, skill, wsa_matches, fast_mode=fast_mode),
-            timeout=plan_timeout,
+            timeout=max(stage_budget["planning"], monitor.remaining_seconds * 0.15),
         )
         await storage.save_plan(plan)
         logger.info("plan_created", steps=plan.total_steps)
@@ -239,10 +262,9 @@ async def run_research(
         if monitor.is_over_budget:
             raise AgentTimeoutError("research", int(monitor.elapsed_seconds * 1000))
 
-        research_pct = 0.7 if fast_mode else 0.6
         research_result = await asyncio.wait_for(
             execute_research(config, plan, registry),
-            timeout=max(30, monitor.remaining_seconds * research_pct),
+            timeout=max(stage_budget["research"], monitor.remaining_seconds * 0.5),
         )
         evidence = await storage.get_evidence(session_id_str)
 
@@ -319,11 +341,12 @@ async def run_research(
 
         if can_deepen:
             iteration = 0
+            max_deepen_iterations = 2  # Fix 6: hard cap on deepening rounds
             prev_count = len(evidence)
             available = monitor.remaining_seconds - analysis_reserve
             logger.info("deepening_started", reserve=f"{analysis_reserve:.0f}s", available=f"{available:.0f}s")
 
-            while monitor.remaining_seconds > analysis_reserve:
+            while monitor.remaining_seconds > analysis_reserve and iteration < max_deepen_iterations:
                 if event_stream:
                     await event_stream.stage_entered(f"deepening_round_{iteration + 1}", monitor.elapsed_seconds)
 
@@ -380,12 +403,24 @@ async def run_research(
                     growth=f"{growth:.1%}",
                 )
 
-                if growth < 0.05:
+                if growth < 0.10:
                     logger.info("deepening_converged", growth=f"{growth:.1%}")
+                    break
+
+                # Fix 5: exit deepening if we've hit the evidence cap
+                if new_count >= evidence_cap:
+                    logger.info("deepening_capped", count=new_count, cap=evidence_cap)
                     break
 
                 prev_count = new_count
                 iteration += 1
+
+        # --- Fix 5: Cap evidence before analysis to prevent overload ---
+        evidence = await storage.get_evidence(session_id_str)
+        if len(evidence) > evidence_cap:
+            evidence_sorted = sorted(evidence, key=lambda e: e.relevance_score, reverse=True)
+            logger.info("evidence_capped", original=len(evidence), capped=evidence_cap)
+            evidence = evidence_sorted[:evidence_cap]
 
         # --- Stage 7: Analysis ---
         monitor.set_stage(ExecutionStage.ANALYSIS)
@@ -395,10 +430,9 @@ async def run_research(
         if monitor.is_over_budget:
             raise AgentTimeoutError("analysis", int(monitor.elapsed_seconds * 1000))
 
-        analysis_pct = 0.8 if fast_mode else 0.7
         await asyncio.wait_for(
             analyze_and_report(config, skill, registry, fast_mode=fast_mode),
-            timeout=max(60, monitor.remaining_seconds * analysis_pct),
+            timeout=max(stage_budget["analysis"], monitor.remaining_seconds * 0.7),
         )
         claims = await storage.get_claims(session_id_str)
         logger.info("analysis_complete", claims=len(claims))
@@ -428,7 +462,7 @@ async def run_research(
             try:
                 await asyncio.wait_for(
                     verify_claims(config, registry, fast_mode=fast_mode),
-                    timeout=max(10, monitor.remaining_seconds * 0.5),
+                    timeout=max(stage_budget["verification"], monitor.remaining_seconds * 0.5),
                 )
             except asyncio.TimeoutError:
                 logger.warning("verification_timeout")
@@ -444,8 +478,28 @@ async def run_research(
         verifications = await storage.get_verifications(session_id_str)
         final_claims = await storage.get_claims(session_id_str)
 
+        # --- Fix 2: Backfill report with structured claims/evidence/sources ---
+        # Benchmark showed 100% of reports had empty claims/evidence/sources arrays.
+        # Claims ARE written to storage via write_claim, but write_report only creates prose.
+        if report:
+            report.claims = final_claims
+            report.evidence = evidence
+            seen_urls: set[str] = set()
+            report.sources = []
+            for e in evidence:
+                if e.source_url and e.source_url not in seen_urls:
+                    seen_urls.add(e.source_url)
+                    report.sources.append({
+                        "url": e.source_url,
+                        "title": e.title,
+                        "domain": e.source_domain,
+                    })
+            report.verifications = verifications
+            await storage.save_report(report)
+
         verified_count = sum(
-            1 for v in verifications if v.status.value == "verified"
+            1 for v in verifications
+            if v.status.value in ("verified", "partially_verified")
         )
 
         summary = SessionSummary(

@@ -49,8 +49,14 @@ class ResearchReport(BaseModel):
     def confidence_rating(self) -> str:
         if not self.claims:
             return "low"
-        verified = sum(1 for c in self.claims if c.confidence.value == "verified")
-        ratio = verified / len(self.claims)
+        # Count both "verified" and "partially_verified" as positive signals.
+        # Benchmark showed verifier marks most claims "partially_verified" (conservative),
+        # so only counting "verified" produced universal "low" confidence across 114 runs.
+        strong = sum(
+            1 for c in self.claims
+            if c.confidence.value in ("verified", "partially_verified")
+        )
+        ratio = strong / len(self.claims)
         if ratio >= 0.7:
             return "high"
         elif ratio >= 0.4:

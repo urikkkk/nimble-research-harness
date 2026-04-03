@@ -28,8 +28,8 @@ class TestTimeBudgetPolicy:
 
     def test_1h_is_maximal(self):
         policy = TimeBudgetPolicy.from_budget(TimeBudget.EXHAUSTIVE_1H)
-        assert policy.max_searches == 200
-        assert policy.max_crawl_pages == 5000
+        assert policy.max_searches == 60  # Rebalanced: depth > breadth
+        assert policy.max_crawl_pages == 2000
         assert policy.verification_strictness == 3
         assert policy.concurrency_limit == 20
 
