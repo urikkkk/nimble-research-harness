@@ -724,5 +724,118 @@ def benchmark_inspect(
         ))
 
 
+# --- BrowseComp Commands ---
+
+browsecomp_app = typer.Typer(help="BrowseComp benchmark commands")
+app.add_typer(browsecomp_app, name="browsecomp")
+
+
+@browsecomp_app.command("run")
+def browsecomp_run(
+    budget: str = typer.Option("2m", "--budget", "-b", help="Time budget per question"),
+    limit: Optional[int] = typer.Option(None, "--limit", "-n", help="Limit number of questions"),
+    concurrency: int = typer.Option(2, "--concurrency", "-c", help="Max concurrent runs"),
+    output_dir: str = typer.Option(".browsecomp_runs", "--output-dir", "-o"),
+    csv_path: str = typer.Option("benchmarks/browse_comp_test_set.csv", "--csv", help="Path to BrowseComp CSV"),
+    resume: Optional[str] = typer.Option(None, "--resume", help="Resume a previous run ID"),
+    mock: bool = typer.Option(False, "--mock", help="Use mock provider"),
+):
+    """Run BrowseComp benchmark: research + grade against ground truth."""
+    from .benchmark.browsecomp import load_browsecomp, run_browsecomp
+
+    if not Path(csv_path).exists():
+        console.print(f"[red]CSV not found: {csv_path}[/red]")
+        console.print("Download with: curl -O https://openaipublic.blob.core.windows.net/simple-evals/browse_comp_test_set.csv")
+        raise typer.Exit(1)
+
+    questions = load_browsecomp(csv_path, limit=limit)
+    provider = MockNimbleProvider() if mock else _get_provider()
+    time_budget = TimeBudget(budget)
+
+    console.print(Panel(
+        f"[bold]BrowseComp Benchmark[/bold]\n\n"
+        f"Questions: {len(questions)} | Budget: {budget} | Concurrency: {concurrency}\n"
+        f"Provider: {'mock' if mock else 'live'}",
+        title="BrowseComp",
+        border_style="blue",
+    ))
+
+    async def _run():
+        return await run_browsecomp(
+            questions=questions,
+            provider=provider,
+            budget=time_budget,
+            output_dir=output_dir,
+            concurrency=concurrency,
+            resume_run_id=resume,
+        )
+
+    result = asyncio.run(_run())
+
+    console.print(f"\n[green]BrowseComp complete: {result.run_id}[/green]")
+    console.print(f"  Accuracy: [bold]{result.accuracy:.1f}%[/bold] ({result.correct}/{result.completed})")
+    console.print(f"  Failed: {result.failed}")
+    console.print(f"\nRun [bold]nrh browsecomp report {result.run_id}[/bold] for detailed analysis.")
+
+
+@browsecomp_app.command("report")
+def browsecomp_report(
+    run_id: str = typer.Argument(..., help="BrowseComp run ID"),
+    output_dir: str = typer.Option(".browsecomp_runs", "--output-dir", "-o"),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: text, json"),
+):
+    """Show detailed report for a BrowseComp run."""
+    from .benchmark.browsecomp import analyze_browsecomp_run, format_browsecomp_report
+
+    run_dir = Path(output_dir) / run_id
+    if not run_dir.exists():
+        console.print(f"[red]Run not found: {run_dir}[/red]")
+        raise typer.Exit(1)
+
+    analysis = analyze_browsecomp_run(run_dir)
+
+    if format == "json":
+        console.print_json(json.dumps(analysis, indent=2, default=str))
+    else:
+        text = format_browsecomp_report(analysis)
+        console.print(text)
+        report_path = run_dir / "report.txt"
+        report_path.write_text(text)
+        console.print(f"\n[dim]Saved to {report_path}[/dim]")
+
+
+@browsecomp_app.command("list")
+def browsecomp_list(
+    output_dir: str = typer.Option(".browsecomp_runs", "--output-dir", "-o"),
+):
+    """List all BrowseComp runs."""
+    runs_dir = Path(output_dir)
+    if not runs_dir.exists():
+        console.print("[dim]No BrowseComp runs found.[/dim]")
+        return
+
+    table = Table(title="BrowseComp Runs")
+    table.add_column("Run ID")
+    table.add_column("Budget")
+    table.add_column("Questions")
+    table.add_column("Correct")
+    table.add_column("Accuracy")
+
+    for d in sorted(runs_dir.iterdir(), reverse=True):
+        if d.is_dir():
+            summary_path = d / "summary.json"
+            if summary_path.exists():
+                data = json.loads(summary_path.read_text())
+                table.add_row(
+                    data.get("run_id", d.name),
+                    data.get("budget", "?"),
+                    str(data.get("total_questions", "?")),
+                    f"{data.get('correct', '?')}/{data.get('completed', '?')}",
+                    f"{data.get('accuracy', 0):.1f}%",
+                )
+
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()
