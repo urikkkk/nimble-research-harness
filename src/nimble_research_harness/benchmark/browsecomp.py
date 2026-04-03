@@ -228,13 +228,16 @@ async def run_browsecomp(
     concurrency: int = 2,
     grader_model: str = "claude-sonnet-4-6",
     resume_run_id: str | None = None,
+    mode: str = "standard",  # "standard" or "deep"
 ) -> BrowseCompRun:
     """Run BrowseComp benchmark through the research harness.
 
     For each question:
-    1. Run research pipeline with the question as query
-    2. Extract the answer from the report
+    1. Run research pipeline (standard or deep mode) with the question
+    2. Extract the answer from the report/session
     3. Grade against ground truth using LLM judge
+
+    mode="deep" uses the multi-hop deep research engine instead of the standard pipeline.
     """
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -293,36 +296,88 @@ async def run_browsecomp(
             logger.info("browsecomp_start", id=q["id"], progress=f"{done+1}/{total}")
 
             try:
-                # Run research
-                storage = JsonStorageBackend(
-                    base_dir=str(run_dir / "sessions" / q["id"])
-                )
-                request = UserResearchRequest(
-                    user_query=q["question"],
-                    time_budget=budget,
-                    preferred_format=ReportFormat.FULL_REPORT,
-                    metadata={"browsecomp_id": q["id"]},
-                )
+                if mode == "deep":
+                    # Deep research mode: multi-hop constraint-driven search
+                    from ..deepresearch.engine import deep_research
 
-                summary = await run_research(request, provider, storage)
-                result.session_id = str(summary.session_id)
-                result.elapsed_seconds = summary.elapsed_seconds
-                result.total_evidence = summary.total_evidence
-                result.total_sources = summary.total_sources
-                result.total_tool_calls = summary.total_tool_calls
-
-                # Extract answer from report
-                report = await storage.load_report(str(summary.session_id))
-                if report:
-                    result.model_response = (
-                        f"Explanation: {report.executive_summary}\n\n"
-                        f"Key findings: {'; '.join(report.key_findings[:5])}\n\n"
-                        f"Detailed: {report.detailed_analysis[:2000]}\n\n"
-                        f"Exact Answer: {report.executive_summary[:200]}\n"
-                        f"Confidence: 50%"
+                    timeout = budget.seconds - 60  # Leave margin
+                    dr_session = await deep_research(
+                        question=q["question"],
+                        provider=provider,
+                        max_hops=5,
+                        max_queries_per_hop=6,
+                        max_parallel=4,
+                        extract_top_n=3,
+                        timeout_seconds=max(120, timeout),
                     )
+                    result.elapsed_seconds = dr_session.elapsed_seconds
+                    result.total_evidence = len([f for h in dr_session.hops for f in h.findings])
+                    result.total_sources = dr_session.total_searches
+                    result.total_tool_calls = dr_session.total_searches + dr_session.total_extracts
+
+                    # Build response from deep research session
+                    if dr_session.final_answer:
+                        result.model_response = (
+                            f"Explanation: After {len(dr_session.hops)} hops of multi-hop research, "
+                            f"decomposing the question into {len(dr_session.constraints)} constraints "
+                            f"and evaluating {len(dr_session.candidates)} candidates.\n\n"
+                            f"Exact Answer: {dr_session.final_answer}\n"
+                            f"Confidence: {int(dr_session.final_confidence * 100)}%"
+                        )
+                    else:
+                        best = dr_session.best_candidate
+                        if best:
+                            result.model_response = (
+                                f"Explanation: Best guess after {len(dr_session.hops)} hops. "
+                                f"Candidate meets {len(best.constraints_met)} constraints.\n\n"
+                                f"Exact Answer: {best.answer}\n"
+                                f"Confidence: {int(best.confidence * 100)}%"
+                            )
+                        else:
+                            result.model_response = (
+                                f"Explanation: No candidate found after {len(dr_session.hops)} hops.\n\n"
+                                f"Exact Answer: None\n"
+                                f"Confidence: 0%"
+                            )
+
+                    # Save deep research session
+                    session_dir = run_dir / "sessions" / q["id"]
+                    session_dir.mkdir(parents=True, exist_ok=True)
+                    (session_dir / "deep_session.json").write_text(
+                        json.dumps(dr_session.to_dict(), indent=2, default=str)
+                    )
+
                 else:
-                    result.model_response = f"Research completed but no report generated. Evidence count: {summary.total_evidence}"
+                    # Standard mode: full research pipeline
+                    storage = JsonStorageBackend(
+                        base_dir=str(run_dir / "sessions" / q["id"])
+                    )
+                    request = UserResearchRequest(
+                        user_query=q["question"],
+                        time_budget=budget,
+                        preferred_format=ReportFormat.FULL_REPORT,
+                        metadata={"browsecomp_id": q["id"]},
+                    )
+
+                    summary = await run_research(request, provider, storage)
+                    result.session_id = str(summary.session_id)
+                    result.elapsed_seconds = summary.elapsed_seconds
+                    result.total_evidence = summary.total_evidence
+                    result.total_sources = summary.total_sources
+                    result.total_tool_calls = summary.total_tool_calls
+
+                    # Extract answer from report
+                    report = await storage.load_report(str(summary.session_id))
+                    if report:
+                        result.model_response = (
+                            f"Explanation: {report.executive_summary}\n\n"
+                            f"Key findings: {'; '.join(report.key_findings[:5])}\n\n"
+                            f"Detailed: {report.detailed_analysis[:2000]}\n\n"
+                            f"Exact Answer: {report.executive_summary[:200]}\n"
+                            f"Confidence: 50%"
+                        )
+                    else:
+                        result.model_response = f"Research completed but no report generated. Evidence count: {summary.total_evidence}"
 
                 # Grade
                 grade = await grade_answer(
