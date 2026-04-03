@@ -47,20 +47,12 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
     """Create a ToolRegistry with all Nimble tool definitions wired to the provider."""
     registry = ToolRegistry()
 
-    # Track search call count for include_answer heuristic
-    _search_count = 0
-
     # --- nimble_search ---
     async def handle_search(params: dict[str, Any]) -> dict[str, Any]:
-        nonlocal _search_count
-        _search_count += 1
         start = time.time()
         ctx = get_context()
         if params.get("focus", "general") not in _VALID_FOCUS:
             params["focus"] = "general"
-        # Fix 4: Auto-enable include_answer for first 3 searches to get synthesized context
-        if _search_count <= 3 and not params.get("include_answer"):
-            params["include_answer"] = True
         search_params = SearchParams(**params)
         resp = await provider.search(search_params)
         latency = int((time.time() - start) * 1000)
@@ -97,19 +89,6 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
                         relevance_score=relevance,
                     )
                 )
-
-        # Fix 4: Include synthesized answer as high-value evidence
-        if resp.answer:
-            await ctx.storage.insert_evidence(
-                EvidenceItem(
-                    session_id=ctx.session_id,
-                    source_url=f"nimble:answer:{params.get('query', '')[:50]}",
-                    title=f"Synthesized answer: {params.get('query', '')[:80]}",
-                    content=resp.answer,
-                    content_type="synthesized_answer",
-                    relevance_score=0.9,
-                )
-            )
 
         return {
             "results": [r.model_dump() for r in resp.results],
