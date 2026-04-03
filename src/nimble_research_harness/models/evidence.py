@@ -62,8 +62,6 @@ class EvidenceItem(BaseModel):
 
 
 class Claim(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
     claim_id: uuid.UUID = Field(default_factory=uuid.uuid4)
     session_id: uuid.UUID
     statement: str
@@ -71,6 +69,8 @@ class Claim(BaseModel):
     confidence: ClaimConfidence = Field(default=ClaimConfidence.UNRESOLVED)
     category: Optional[str] = None
     importance: int = Field(default=1, ge=1, le=5)
+    source_urls: list[str] = Field(default_factory=list)
+    excerpts: list[str] = Field(default_factory=list)
 
 
 class VerificationResult(BaseModel):

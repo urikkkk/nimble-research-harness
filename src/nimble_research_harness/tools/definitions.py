@@ -455,13 +455,32 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
         from ..models.enums import ClaimConfidence
 
         ctx = get_context()
+
+        # Resolve evidence URLs and excerpts for citation chain
+        source_urls = params.get("source_urls", [])
+        excerpts = params.get("excerpts", [])
+        evidence_ids = params.get("evidence_ids", [])
+
+        # If analyst provided evidence_ids but no URLs, resolve them from storage
+        if evidence_ids and not source_urls:
+            all_evidence = await ctx.storage.get_evidence(str(ctx.session_id))
+            eid_set = set(evidence_ids)
+            for e in all_evidence:
+                if str(e.evidence_id) in eid_set:
+                    if e.source_url:
+                        source_urls.append(e.source_url)
+                    if e.content:
+                        excerpts.append(e.content[:300])
+
         claim = Claim(
             session_id=ctx.session_id,
             statement=params["statement"],
-            evidence_ids=[uuid.UUID(eid) for eid in params.get("evidence_ids", [])],
+            evidence_ids=[uuid.UUID(eid) for eid in evidence_ids],
             confidence=ClaimConfidence(params.get("confidence", "unresolved")),
             category=params.get("category"),
             importance=params.get("importance", 1),
+            source_urls=source_urls,
+            excerpts=excerpts,
         )
         await ctx.storage.insert_claim(claim)
         return {"claim_id": str(claim.claim_id), "status": "ok"}
@@ -469,12 +488,14 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="write_claim",
-            description="Record a research claim linked to supporting evidence.",
+            description="Record a research claim linked to supporting evidence with citations.",
             input_schema={
                 "type": "object",
                 "properties": {
-                    "statement": {"type": "string", "description": "The claim statement"},
+                    "statement": {"type": "string", "description": "The claim statement with specific data points"},
                     "evidence_ids": {"type": "array", "items": {"type": "string"}, "default": []},
+                    "source_urls": {"type": "array", "items": {"type": "string"}, "description": "Source URLs that support this claim", "default": []},
+                    "excerpts": {"type": "array", "items": {"type": "string"}, "description": "Key excerpts from sources that support this claim", "default": []},
                     "confidence": {
                         "type": "string",
                         "enum": ["verified", "partially_verified", "weak_support", "unresolved"],

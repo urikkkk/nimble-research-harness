@@ -41,6 +41,23 @@ Wave 2 (dependent detail layer — runs after Wave 1 completes):
 When NO WSA agents are available, allocate 100% to nimble_search.
 Use nimble_extract only for specific article URLs, not generic retailer pages.
 
+TARGETED SOURCE EXTRACTION (critical for quality):
+For company research, ALWAYS include nimble_extract steps for these high-value pages:
+- Company's official website (e.g., company.com/about, company.com/press, company.com/media-center)
+- Investor relations page (e.g., investors.company.com, company.com/investor-relations)
+- Careers/jobs page (e.g., careers.company.com, company.com/careers)
+- Official press releases and news pages
+
+SEC FILING AWARENESS:
+For ANY publicly traded company, include search steps for:
+- "[Company] 10-K annual report data analytics" or "[Company] 10-K digital transformation"
+- "[Company] SEC filing technology strategy"
+These filings contain board-level strategic commitments that are the strongest signals.
+
+PARTNERSHIP DISCOVERY:
+Always search for "[Company] partnership announcement [year]" and "[Company] technology vendor deal".
+Major vendor partnerships (Microsoft, AWS, Google Cloud, Snowflake, etc.) are often the #1 signal.
+
 Available tools for research steps (use exact param names):
 - nimble_search: params must include "query" (single string), optional "focus" and "max_results". Use focus "shopping" for product pricing queries.
 - nimble_extract: params must include "url" (single string URL). Only use for specific article/product URLs, not category pages.
