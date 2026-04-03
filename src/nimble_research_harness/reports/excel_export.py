@@ -70,7 +70,11 @@ def export_excel(
     """
     wb = Workbook()
 
-    domains = Counter(e.get("source_domain", "") for e in evidence)
+    # Defensive: ensure all inputs are safe
+    report = report or {}
+    claims = claims or []
+    evidence = evidence or []
+    domains = Counter(e.get("source_domain", "") or "" for e in evidence)
     meta = session_meta or {}
 
     # === TAB 1: EXECUTIVE DASHBOARD ===
@@ -116,7 +120,7 @@ def export_excel(
     ws1.cell(row=r, column=1, value="KEY FINDINGS").font = SEC_FONT
     ws1.cell(row=r, column=1).fill = SEC_FILL
     r += 1
-    for finding in report.get("key_findings", []):
+    for finding in (report.get("key_findings") or []):
         ws1.merge_cells(f"A{r}:H{r}")
         ws1.cell(row=r, column=1, value=f"• {finding}").font = BODY_FONT
         ws1.cell(row=r, column=1).alignment = WRAP
@@ -238,7 +242,7 @@ def export_excel(
         r = len(method_data) + 3
         ws5.cell(row=r, column=1, value="KNOWN UNKNOWNS").font = SEC_FONT
         ws5.cell(row=r, column=1).fill = SEC_FILL
-        for item in report["known_unknowns"]:
+        for item in (report["known_unknowns"] or []):
             r += 1
             ws5.cell(row=r, column=1, value=f"• {item}").font = BODY_FONT
             ws5.cell(row=r, column=1).alignment = WRAP
@@ -247,7 +251,7 @@ def export_excel(
         r += 2
         ws5.cell(row=r, column=1, value="LIMITATIONS").font = SEC_FONT
         ws5.cell(row=r, column=1).fill = SEC_FILL
-        for item in report["limitations"]:
+        for item in (report["limitations"] or []):
             r += 1
             ws5.cell(row=r, column=1, value=f"• {item}").font = BODY_FONT
             ws5.cell(row=r, column=1).alignment = WRAP
