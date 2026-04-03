@@ -36,11 +36,19 @@ async def execute_research(
     config: SessionConfig,
     plan: ResearchPlan,
     registry: ToolRegistry,
+    skill: "DynamicSkillSpec | None" = None,
 ) -> dict[str, Any]:
     """Execute research plan steps with bounded concurrency."""
     semaphore = asyncio.Semaphore(config.policy.concurrency_limit)
     results: list[dict[str, Any]] = []
     errors: list[str] = []
+
+    # Fix 7: Extract domain filters from skill spec to inject into search calls
+    domain_include = []
+    domain_exclude = []
+    if skill and skill.source_policy:
+        domain_include = list(skill.source_policy.domain_include or [])
+        domain_exclude = list(skill.source_policy.domain_exclude or [])
 
     async def run_step(step):
         async with semaphore:
@@ -55,6 +63,16 @@ async def execute_research(
                 if step.wsa_agent_name:
                     params["agent_name"] = step.wsa_agent_name
                 params = _normalize_step_params(step.tool.value, params)
+
+                # Fix 7: Inject domain filters from skill spec into search calls
+                if step.tool.value == "nimble_search":
+                    if domain_include and not params.get("include_domains"):
+                        # Only inject real domains (must contain a dot)
+                        real_domains = [d for d in domain_include if "." in d]
+                        if real_domains:
+                            params["include_domains"] = real_domains
+                    if domain_exclude and not params.get("exclude_domains"):
+                        params["exclude_domains"] = domain_exclude
 
                 result = await asyncio.wait_for(
                     registry.dispatch(step.tool.value, params),

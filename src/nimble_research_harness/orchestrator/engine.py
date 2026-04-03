@@ -263,7 +263,7 @@ async def run_research(
             raise AgentTimeoutError("research", int(monitor.elapsed_seconds * 1000))
 
         research_result = await asyncio.wait_for(
-            execute_research(config, plan, registry),
+            execute_research(config, plan, registry, skill=skill),
             timeout=max(stage_budget["research"], monitor.remaining_seconds * 0.5),
         )
         evidence = await storage.get_evidence(session_id_str)
@@ -302,11 +302,9 @@ async def run_research(
                 await event_stream.stage_entered("extraction", monitor.elapsed_seconds)
 
             priority_urls = skill.extraction_strategy.priority_urls[:5]
-            for url in priority_urls:
-                if monitor.is_over_budget:
-                    break
 
-                # Run pre-hooks for domain filtering
+            # Fix 2: Parallelize extraction — was sequential (20-30s savings)
+            async def _extract_one(url: str) -> None:
                 hook_ctx = HookContext(
                     tool_name="nimble_extract",
                     params={"url": url},
@@ -317,8 +315,7 @@ async def run_research(
                 hook_result = await hooks.run_pre_hooks(hook_ctx)
                 if hook_result.decision == HookDecision.BLOCK:
                     logger.info("extraction_blocked_by_hook", url=url, reason=hook_result.reason)
-                    continue
-
+                    return
                 try:
                     await asyncio.wait_for(
                         registry.dispatch("nimble_extract", {"url": url}),
@@ -328,6 +325,13 @@ async def run_research(
                         await event_stream.tool_completed("nimble_extract", f"Extracted {url}", 0)
                 except (asyncio.TimeoutError, Exception) as e:
                     logger.warning("extraction_failed", url=url, error=str(e))
+
+            if priority_urls:
+                extract_tasks = [_extract_one(url) for url in priority_urls]
+                await asyncio.wait_for(
+                    asyncio.gather(*extract_tasks, return_exceptions=True),
+                    timeout=max(stage_budget["extraction"], 35),
+                )
             await monitor.create_checkpoint(ExecutionStage.EXTRACTION, 6)
 
         # --- Stage 6b: Evidence Deepening (budget >= 10m only) ---

@@ -66,6 +66,21 @@ Available tools for research steps (use exact param names):
 IMPORTANT: Each step's params must use singular "query" (not "queries") and "url" (not "urls").
 Each step handles ONE query or ONE url.
 
+CRITICAL — AVOID REDUNDANCY:
+Do NOT generate search queries that are minor keyword variations of each other.
+Each query MUST target a DISTINCT angle, source type, or subquestion.
+BAD: "AI agents enterprise 2026", "enterprise AI agent adoption 2026", "AI agent enterprise software trends"
+GOOD: "AI agent market size IDC Gartner 2026", "enterprise AI agent case studies ROI", "Salesforce ServiceNow AI agent product launches"
+Maximum 8-12 unique search queries for any budget. Quality over quantity.
+
+CRITICAL — USE FOCUS MODES:
+When the skill spec includes focus_modes, use them in search step params.
+Set the "focus" param on each search step to the most appropriate mode:
+- "news" for current events, regulatory updates, announcements
+- "academic" for research papers, clinical studies, scientific data
+- "general" for broad overview and comparison queries
+Mix focus modes across steps — don't use "general" for everything.
+
 Always call `submit_plan` with your complete plan."""
 
 _plan_result: ResearchPlan | None = None
