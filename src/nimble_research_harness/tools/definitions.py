@@ -73,7 +73,9 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
         query_terms = set(params.get("query", "").lower().split())
 
         for r in resp.results:
-            if r.url:
+            content = r.snippet or r.content or ""
+            # Skip short/empty search results — they're noise
+            if r.url and len(content.strip()) >= _MIN_CONTENT_LENGTH:
                 position_score = max(0.3, 1.0 - r.position * 0.1)
                 title_terms = set((r.title or "").lower().split())
                 overlap = len(query_terms & title_terms) / max(len(query_terms), 1)
@@ -84,7 +86,7 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
                         session_id=ctx.session_id,
                         source_url=r.url,
                         title=r.title,
-                        content=r.snippet or r.content or "",
+                        content=content,
                         content_type="search_result",
                         relevance_score=relevance,
                     )

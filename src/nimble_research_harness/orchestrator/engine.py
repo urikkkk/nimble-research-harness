@@ -173,12 +173,18 @@ async def run_research(
             skill_domains = [d for d in skill_domains if "." in d]
 
             # Infer domains from target entities (e.g., "Walmart Dallas TX" → "walmart.com")
+            # Require: domain base is 4+ chars and appears as a word in the entity
+            import re as _re
             for entity in (skill.target_entities or []):
                 entity_lower = entity.lower()
                 for agent in catalog.all_agents:
                     if agent.domain:
                         domain_base = agent.domain.lower().replace("www.", "").split(".")[0]
-                        if domain_base in entity_lower and agent.domain not in skill_domains:
+                        # Skip short bases (e.g., "ed" from ed.gov) — too many false positives
+                        if len(domain_base) < 4:
+                            continue
+                        # Match as whole word to avoid "data" matching in "web data APIs"
+                        if _re.search(r'\b' + _re.escape(domain_base) + r'\b', entity_lower) and agent.domain not in skill_domains:
                             skill_domains.append(agent.domain)
 
             # Skip WSA entirely if no real domains found — don't waste time scoring
@@ -292,7 +298,7 @@ async def run_research(
 
         # --- Stage 6: Extraction (optional deep extract) ---
         # Skip extraction if search already yielded rich evidence
-        skip_extraction = len(evidence) >= 80 and fast_mode
+        skip_extraction = len(evidence) >= 50 and fast_mode
         if skip_extraction:
             logger.info("extraction_skipped", reason="sufficient_search_evidence", evidence_count=len(evidence))
 
