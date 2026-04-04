@@ -7,7 +7,15 @@ import json
 import anthropic
 
 from ..infra.logging import get_logger
-from .prompts import EXTRACT_CANDIDATES_PROMPT, INITIAL_QUERIES_PROMPT, REFINE_QUERIES_PROMPT, GAP_ANALYSIS_PROMPT
+from .prompts import (
+    ANSWER_FROM_ENTITY_PROMPT,
+    ENTITY_DISCOVERY_PROMPT,
+    EXTRACT_CANDIDATES_PROMPT,
+    INITIAL_QUERIES_PROMPT,
+    REFINE_QUERIES_PROMPT,
+    GAP_ANALYSIS_PROMPT,
+    SPECIALIZED_SOURCES,
+)
 from .state import Candidate, Constraint, SearchFinding
 
 logger = get_logger(__name__)
@@ -180,3 +188,119 @@ async def analyze_gaps(
         max_tokens=512,
     )
     return response.content[0].text.strip()
+
+
+# --- Entity Discovery Functions ---
+
+
+def detect_domain(constraints: list[Constraint], answer_type: str) -> list[str]:
+    """Detect domain from constraints and return specialized site: prefixes."""
+    text = " ".join(c.text.lower() for c in constraints) + " " + answer_type.lower()
+
+    domains = []
+    if any(w in text for w in ("soccer", "football", "referee", "match", "player", "goal", "league")):
+        domains.extend(SPECIALIZED_SOURCES.get("sports", []))
+    if any(w in text for w in ("actor", "actress", "film", "movie", "directed", "starring")):
+        domains.extend(SPECIALIZED_SOURCES.get("movie", []))
+    if any(w in text for w in ("tv series", "tv show", "episode", "season", "sitcom")):
+        domains.extend(SPECIALIZED_SOURCES.get("tv", []))
+    if any(w in text for w in ("manga", "anime", "chapter", "mangaka")):
+        domains.extend(SPECIALIZED_SOURCES.get("manga", []))
+    if any(w in text for w in ("died", "death", "passed away", "obituary", "funeral")):
+        domains.extend(SPECIALIZED_SOURCES.get("death", []))
+    if any(w in text for w in ("paper", "published", "journal", "research", "author", "phd", "thesis")):
+        domains.extend(SPECIALIZED_SOURCES.get("academic", []))
+    if any(w in text for w in ("born", "worked at", "employed", "founded", "career")):
+        domains.extend(SPECIALIZED_SOURCES.get("person", []))
+    if any(w in text for w in ("album", "song", "band", "musician", "singer")):
+        domains.extend(SPECIALIZED_SOURCES.get("music", []))
+
+    # Always include Wikipedia
+    if "site:wikipedia.org" not in domains:
+        domains.append("site:wikipedia.org")
+
+    return domains[:6]  # Max 6 site: prefixes
+
+
+async def discover_entities(
+    question: str,
+    constraints: list[Constraint],
+    findings: list[SearchFinding],
+) -> list[dict]:
+    """Discover named entities from search findings."""
+    client = anthropic.AsyncAnthropic()
+    response = await client.messages.create(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": ENTITY_DISCOVERY_PROMPT.format(
+            question=question,
+            constraints=_format_constraints(constraints),
+            findings=_format_findings(findings),
+        )}],
+        max_tokens=1024,
+    )
+    try:
+        entities = _parse_json_response(response.content[0].text)
+        return [e for e in entities if isinstance(e, dict) and e.get("entity")]
+    except (json.JSONDecodeError, IndexError):
+        logger.warning("entity_discovery_parse_failed")
+        return []
+
+
+async def extract_answer_from_entity(
+    question: str,
+    entity_name: str,
+    answer_type: str,
+    findings: list[SearchFinding],
+) -> Candidate | None:
+    """Given an identified entity, extract the specific answer from evidence."""
+    # Build evidence focused on this entity
+    entity_lower = entity_name.lower()
+    evidence = []
+    for f in findings:
+        text = f.full_content or f.snippet
+        if entity_lower in text.lower() or any(w in text.lower() for w in entity_lower.split() if len(w) > 3):
+            evidence.append(f"[{f.url}] {f.title}\n{text[:1000]}")
+
+    if not evidence:
+        return None
+
+    client = anthropic.AsyncAnthropic()
+    response = await client.messages.create(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": ANSWER_FROM_ENTITY_PROMPT.format(
+            question=question,
+            entity_name=entity_name,
+            answer_type=answer_type,
+            evidence="\n\n".join(evidence[:10]),
+        )}],
+        max_tokens=512,
+    )
+    try:
+        result = _parse_json_response(response.content[0].text)
+        if isinstance(result, dict) and result.get("answer"):
+            answer = result["answer"].strip()
+            if answer.lower() != "none":
+                return Candidate(
+                    answer=answer,
+                    confidence=float(result.get("confidence", 0.5)),
+                    source_snippet=result.get("source_snippet", "")[:500],
+                    constraints_met=[],
+                )
+    except (json.JSONDecodeError, IndexError):
+        pass
+    return None
+
+
+def generate_entity_pivot_queries(entity_name: str, answer_type: str, constraints: list[Constraint]) -> list[str]:
+    """Generate queries to find specific details about a known entity."""
+    queries = [
+        f"{entity_name} Wikipedia",
+        f"{entity_name} biography",
+        f'"{entity_name}" {answer_type}',
+    ]
+
+    # Add constraint-specific queries
+    for c in constraints[:3]:
+        queries.append(f"{entity_name} {c.text[:30]}")
+
+    return queries[:6]

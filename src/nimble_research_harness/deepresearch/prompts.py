@@ -190,3 +190,67 @@ What's missing or wrong:
 Provide a brief analysis (2-3 sentences) of what to try next.
 
 Return ONLY the analysis text, no JSON."""
+
+
+# --- Step 7: Entity Discovery ---
+
+ENTITY_DISCOVERY_PROMPT = """You are identifying the MAIN ENTITY that a complex question is about.
+
+The question describes something (a person, movie, place, event, organization, etc.) using multiple constraints.
+Your job is to figure out WHAT ENTITY the question is describing — not the final answer, but the subject.
+
+Question: {question}
+
+Constraints:
+{constraints}
+
+Search findings so far:
+{findings}
+
+Instructions:
+1. Look for NAMES mentioned in the findings that match multiple constraints
+2. The entity is usually a proper noun (person name, movie title, place name, organization name)
+3. Return ALL plausible entity names, even if you're not sure
+4. Include the source URL where you found each entity
+
+Return JSON array:
+[{{"entity": "Ken Walibora", "entity_type": "person", "constraints_matched": ["African author", "died in road accident"], "source_url": "https://..."}}]
+
+Return ONLY the JSON array, no other text."""
+
+
+# --- Step 8: Answer Extraction from Entity ---
+
+ANSWER_FROM_ENTITY_PROMPT = """You have identified an entity. Now find the SPECIFIC ANSWER the question asks about this entity.
+
+Question: {question}
+Identified entity: {entity_name}
+Expected answer type: {answer_type}
+
+The question asks for a specific detail about this entity. Search the evidence for that detail.
+
+Evidence about this entity:
+{evidence}
+
+What specific {answer_type} does the question ask for? Extract it from the evidence.
+
+Return JSON:
+{{"answer": "the specific answer", "confidence": 0.0-1.0, "source_snippet": "relevant text"}}
+
+Return ONLY the JSON, no other text."""
+
+
+# --- Specialized source mapping ---
+
+SPECIALIZED_SOURCES = {
+    "sports": ["site:rsssf.com", "site:transfermarkt.com", "site:worldfootball.net", "site:11v11.com", "site:eu-football.info"],
+    "person": ["site:linkedin.com", "site:wikipedia.org", "site:wikidata.org"],
+    "movie": ["site:imdb.com", "site:letterboxd.com", "site:rottentomatoes.com"],
+    "tv": ["site:imdb.com", "site:thetvdb.com", "site:wikipedia.org"],
+    "music": ["site:discogs.com", "site:allmusic.com", "site:musicbrainz.org"],
+    "academic": ["site:scholar.google.com", "site:pubmed.ncbi.nlm.nih.gov", "site:semanticscholar.org"],
+    "location": ["site:wikipedia.org", "site:geonames.org"],
+    "death": ["site:legacy.com", "obituary", "site:findagrave.com"],
+    "manga": ["site:myanimelist.net", "site:mangaupdates.com", "site:anilist.co"],
+    "art": ["site:artnet.com", "site:wikipedia.org"],
+}

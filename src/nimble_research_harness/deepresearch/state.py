@@ -70,6 +70,8 @@ class DeepResearchSession:
 
     question: str
     expected_answer_type: str = "other"  # person, place, time, date, number, title, organization, etc.
+    identified_entity: str = ""  # The main entity the question is about (person name, movie title, etc.)
+    identified_entity_type: str = ""  # person, movie, place, event, etc.
     constraints: list[Constraint] = field(default_factory=list)
     hops: list[HopState] = field(default_factory=list)
     candidates: list[Candidate] = field(default_factory=list)
