@@ -27,6 +27,7 @@ from ..infra.hooks import HookContext, HookDecision, HookRegistry, build_hooks
 from ..infra.logging import get_logger
 from ..models.discovery import AgentFitScore
 from ..models.enums import ExecutionMode, ExecutionStage, TimeBudget
+from ..models.skill import DynamicSkillSpec
 from ..models.output import ResearchReport, SessionSummary
 from ..models.session import SessionConfig, UserResearchRequest
 from ..nimble.provider import NimbleProvider
@@ -47,6 +48,7 @@ async def run_research(
     resume_session_id: Optional[str] = None,
     gate_registry: Optional[GateRegistry] = None,
     event_stream: Optional[EventStream] = None,
+    skill_override: Optional[DynamicSkillSpec] = None,
 ) -> SessionSummary:
     """Execute the full research pipeline with hooks, events, and gates."""
 
@@ -137,7 +139,13 @@ async def run_research(
     }
     evidence_cap = EVIDENCE_CAP.get(config.time_budget, 100)
 
-    try:
+    # --- Global watchdog: hard deadline prevents sessions from hanging indefinitely ---
+    hard_deadline = total_seconds + 60  # 60s grace period beyond budget
+
+    async def _run_pipeline() -> SessionSummary:
+        """Inner pipeline — wrapped by global watchdog timeout."""
+        nonlocal wsa_matches  # noqa: allow mutation from inner scope
+
         # --- Stage 0b: Initial Discovery ---
         monitor.set_stage(ExecutionStage.DISCOVERY)
         if event_stream:
@@ -152,11 +160,19 @@ async def run_research(
         if monitor.is_over_budget:
             raise AgentTimeoutError("skill_gen", int(monitor.elapsed_seconds * 1000))
 
-        skill = await asyncio.wait_for(
-            build_skill(config, fast_mode=fast_mode),
-            timeout=max(stage_budget["skill_gen"], monitor.remaining_seconds * 0.15),
-        )
-        logger.info("skill_generated", title=skill.title, subquestions=len(skill.subquestions))
+        if skill_override:
+            import uuid as _uuid
+            skill = skill_override.model_copy(update={
+                "session_id": config.session_id,
+                "skill_id": _uuid.uuid4(),
+            })
+            logger.info("skill_injected", title=skill.title, subquestions=len(skill.subquestions))
+        else:
+            skill = await asyncio.wait_for(
+                build_skill(config, fast_mode=fast_mode),
+                timeout=max(stage_budget["skill_gen"], monitor.remaining_seconds * 0.15),
+            )
+            logger.info("skill_generated", title=skill.title, subquestions=len(skill.subquestions))
 
         # --- Stage 2b: WSA Strategy (budget >= 10m only) ---
         # WSAs take 3-7s per call — only use with sufficient budget
@@ -565,46 +581,52 @@ async def run_research(
 
         return summary
 
-    except (AgentTimeoutError, AgentAbortError) as e:
-        msg = e.phase_name if isinstance(e, AgentTimeoutError) else e.reason
-        logger.warning("research_stopped", reason=msg)
-        evidence = await storage.get_evidence(session_id_str)
-        claims = await storage.get_claims(session_id_str)
-        tool_calls = await storage.get_tool_calls(session_id_str)
-
-        summary = SessionSummary(
+    # --- Helper to build a FAILED summary, salvaging partial data ---
+    async def _build_failure_summary() -> SessionSummary:
+        try:
+            ev = await storage.get_evidence(session_id_str)
+            cl = await storage.get_claims(session_id_str)
+            tc = await storage.get_tool_calls(session_id_str)
+        except Exception:
+            ev, cl, tc = [], [], []
+        return SessionSummary(
             session_id=config.session_id,
             user_query=config.user_query,
             time_budget=config.time_budget,
             execution_mode=config.execution_mode,
             final_stage=ExecutionStage.FAILED,
-            total_tool_calls=len(tool_calls),
-            total_evidence=len(evidence),
-            total_sources=len(set(e.source_url for e in evidence)),
-            total_claims=len(claims),
+            total_tool_calls=len(tc),
+            total_evidence=len(ev),
+            total_sources=len(set(e.source_url for e in ev)),
+            total_claims=len(cl),
             elapsed_seconds=monitor.elapsed_seconds,
         )
-        await storage.save_summary(summary)
 
+    # --- Global watchdog: wrap pipeline with hard deadline ---
+    try:
+        return await asyncio.wait_for(_run_pipeline(), timeout=hard_deadline)
+
+    except asyncio.TimeoutError:
+        logger.error("hard_deadline_exceeded", budget_seconds=total_seconds, hard_deadline=hard_deadline)
+        summary = await _build_failure_summary()
+        await storage.save_summary(summary)
+        if event_stream:
+            await event_stream.session_failed(f"Hard deadline exceeded ({hard_deadline:.0f}s)")
+        return summary
+
+    except (AgentTimeoutError, AgentAbortError) as e:
+        msg = e.phase_name if isinstance(e, AgentTimeoutError) else e.reason
+        logger.warning("research_stopped", reason=msg)
+        summary = await _build_failure_summary()
+        await storage.save_summary(summary)
         if event_stream:
             await event_stream.session_failed(str(e))
-
         return summary
 
     except Exception as e:
         logger.error("research_failed", error=str(e))
-
-        summary = SessionSummary(
-            session_id=config.session_id,
-            user_query=config.user_query,
-            time_budget=config.time_budget,
-            execution_mode=config.execution_mode,
-            final_stage=ExecutionStage.FAILED,
-            elapsed_seconds=monitor.elapsed_seconds,
-        )
+        summary = await _build_failure_summary()
         await storage.save_summary(summary)
-
         if event_stream:
             await event_stream.session_failed(str(e))
-
         raise

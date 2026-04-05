@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -19,9 +20,11 @@ class JsonStorageBackend:
     """File-based JSON storage in .research_sessions/."""
 
     def __init__(self, base_dir: Optional[str] = None):
-        self.base_dir = Path(
-            base_dir or os.environ.get("NRH_SESSIONS_DIR", ".research_sessions")
+        _default = os.environ.get(
+            "NRH_SESSIONS_DIR",
+            str(Path(__file__).resolve().parents[3] / ".research_sessions"),
         )
+        self.base_dir = Path(base_dir or _default).resolve()
 
     def _session_dir(self, session_id: str) -> Path:
         d = self.base_dir / session_id
@@ -56,6 +59,7 @@ class JsonStorageBackend:
     async def save_skill(self, skill: DynamicSkillSpec) -> None:
         d = self._session_dir(str(skill.session_id))
         self._write_json(d / "skill.json", skill.model_dump(mode="json"))
+        self._update_skill_index(skill, str(skill.session_id))
 
     async def load_skill(self, session_id: str) -> Optional[DynamicSkillSpec]:
         data = self._read_json(self._session_dir(session_id) / "skill.json")
@@ -140,6 +144,11 @@ class JsonStorageBackend:
     async def list_sessions(self) -> list[dict[str, Any]]:
         if not self.base_dir.exists():
             return []
+        # Ensure skill index exists for enrichment
+        index = self._load_skill_index()
+        slug_by_session = {e["session_id"]: e.get("slug", "") for e in index}
+        title_by_session = {e["session_id"]: e.get("title", "") for e in index}
+
         sessions = []
         for d in sorted(self.base_dir.iterdir()):
             if d.is_dir():
@@ -150,6 +159,8 @@ class JsonStorageBackend:
                     summary = self._read_json(summary_path)
                     sessions.append({
                         "session_id": d.name,
+                        "slug": slug_by_session.get(d.name, ""),
+                        "title": title_by_session.get(d.name, ""),
                         "user_query": data.get("user_query", ""),
                         "time_budget": data.get("time_budget", ""),
                         "created_at": data.get("created_at", ""),
@@ -157,3 +168,119 @@ class JsonStorageBackend:
                         "final_stage": summary.get("final_stage") if summary else None,
                     })
         return sessions
+
+    # --- Skill Index ---
+
+    def _skill_index_path(self) -> Path:
+        return self.base_dir / "skills_index.json"
+
+    def _load_skill_index(self) -> list[dict[str, Any]]:
+        path = self._skill_index_path()
+        if not path.exists():
+            self._rebuild_skill_index()
+        return self._read_json(path) or []
+
+    def _update_skill_index(self, skill: DynamicSkillSpec, session_id: str) -> None:
+        index = self._read_json(self._skill_index_path()) or []
+        # Remove existing entry for this session
+        index = [e for e in index if e.get("session_id") != session_id]
+        # Resolve slug collision
+        slug = skill.slug
+        existing_slugs = {e["slug"] for e in index}
+        if slug in existing_slugs:
+            counter = 2
+            while f"{slug}-{counter}" in existing_slugs:
+                counter += 1
+            slug = f"{slug}-{counter}"
+        index.append({
+            "session_id": session_id,
+            "skill_id": str(skill.skill_id),
+            "slug": slug,
+            "title": skill.title,
+            "task_type": skill.task_type.value if hasattr(skill.task_type, "value") else str(skill.task_type),
+            "time_budget": skill.time_budget.value if hasattr(skill.time_budget, "value") else str(skill.time_budget),
+            "created_at": str(skill.created_at),
+            "has_report": (self.base_dir / session_id / "report.json").exists(),
+        })
+        self._write_json(self._skill_index_path(), index)
+
+    def _rebuild_skill_index(self) -> None:
+        """Scan all session dirs and build the skill index from scratch."""
+        if not self.base_dir.exists():
+            return
+        index: list[dict[str, Any]] = []
+        used_slugs: set[str] = set()
+        for d in sorted(self.base_dir.iterdir()):
+            if not d.is_dir():
+                continue
+            skill_path = d / "skill.json"
+            if not skill_path.exists():
+                # Fall back to session.json for sessions without a skill
+                session_path = d / "session.json"
+                if session_path.exists():
+                    data = self._read_json(session_path)
+                    query = data.get("user_query", d.name)
+                    slug = re.sub(r"[^a-z0-9]+", "-", query.lower()).strip("-")[:60]
+                    if slug in used_slugs:
+                        counter = 2
+                        while f"{slug}-{counter}" in used_slugs:
+                            counter += 1
+                        slug = f"{slug}-{counter}"
+                    used_slugs.add(slug)
+                    index.append({
+                        "session_id": d.name,
+                        "skill_id": "",
+                        "slug": slug,
+                        "title": query[:80],
+                        "task_type": data.get("task_type", ""),
+                        "time_budget": data.get("time_budget", ""),
+                        "created_at": data.get("created_at", ""),
+                        "has_report": (d / "report.json").exists(),
+                    })
+                continue
+            try:
+                skill = DynamicSkillSpec(**self._read_json(skill_path))
+            except Exception:
+                continue
+            slug = skill.slug
+            if slug in used_slugs:
+                counter = 2
+                while f"{slug}-{counter}" in used_slugs:
+                    counter += 1
+                slug = f"{slug}-{counter}"
+            used_slugs.add(slug)
+            index.append({
+                "session_id": d.name,
+                "skill_id": str(skill.skill_id),
+                "slug": slug,
+                "title": skill.title,
+                "task_type": skill.task_type.value if hasattr(skill.task_type, "value") else str(skill.task_type),
+                "time_budget": skill.time_budget.value if hasattr(skill.time_budget, "value") else str(skill.time_budget),
+                "created_at": str(skill.created_at),
+                "has_report": (d / "report.json").exists(),
+            })
+        self._write_json(self._skill_index_path(), index)
+
+    async def list_skills(self) -> list[dict[str, Any]]:
+        index = self._load_skill_index()
+        return sorted(index, key=lambda e: e.get("created_at", ""), reverse=True)
+
+    async def find_skill(self, name_or_id: str) -> Optional[dict[str, Any]]:
+        index = self._load_skill_index()
+        # Exact match by session_id
+        for entry in index:
+            if entry["session_id"] == name_or_id:
+                return entry
+        # Exact match by slug
+        for entry in index:
+            if entry.get("slug") == name_or_id:
+                return entry
+        # Prefix match by slug
+        matches = [e for e in index if e.get("slug", "").startswith(name_or_id)]
+        if len(matches) == 1:
+            return matches[0]
+        # Prefix match by session_id
+        matches = [e for e in index if e["session_id"].startswith(name_or_id)]
+        if len(matches) == 1:
+            return matches[0]
+        return None

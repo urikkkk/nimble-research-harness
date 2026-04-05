@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .enums import (
     DeploymentStatus,
@@ -124,6 +125,15 @@ class DynamicSkillSpec(BaseModel):
     skill_id: uuid.UUID = Field(default_factory=uuid.uuid4)
     session_id: uuid.UUID
     title: str
+    slug: str = Field(default="", description="URL-safe slug derived from title")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_slug(cls, data: dict) -> dict:
+        if isinstance(data, dict) and not data.get("slug") and data.get("title"):
+            raw = re.sub(r"[^a-z0-9]+", "-", data["title"].lower()).strip("-")[:60]
+            data["slug"] = raw
+        return data
     user_objective: str
     task_type: TaskType
     time_budget: TimeBudget

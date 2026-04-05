@@ -436,32 +436,114 @@ def research_excel(
     console.print(f"[green]Excel report saved: {out_path}[/green]")
 
 
+def _resolve_skill_session(storage, name_or_id: str, require_skill_json: bool = True) -> str:
+    """Resolve a name-or-id to a session_id. Exits with error if not found."""
+    match = asyncio.run(storage.find_skill(name_or_id))
+    if match:
+        sid = match["session_id"]
+        if require_skill_json:
+            skill = asyncio.run(storage.load_skill(sid))
+            if not skill:
+                console.print(f"[red]Session '{name_or_id}' exists but has no skill spec (skill generation may have been skipped).[/red]")
+                raise typer.Exit(1)
+        return sid
+    # Fall back to raw session_id (for backward compat)
+    skill = asyncio.run(storage.load_skill(name_or_id))
+    if skill:
+        return name_or_id
+    console.print(f"[red]No skill found for '{name_or_id}'[/red]")
+    console.print("[dim]Use 'nrh skill list' to see available skills.[/dim]")
+    raise typer.Exit(1)
+
+
+@skill_app.command("list")
+def skill_list():
+    """List all generated research skills by name."""
+    storage = _get_storage()
+    skills = asyncio.run(storage.list_skills())
+
+    if not skills:
+        console.print("[dim]No skills found.[/dim]")
+        return
+
+    table = Table(title="Research Skills")
+    table.add_column("Name (slug)", style="cyan", max_width=40)
+    table.add_column("Title", max_width=50)
+    table.add_column("Budget")
+    table.add_column("Report")
+    table.add_column("Created")
+
+    for s in skills:
+        table.add_row(
+            s.get("slug", "")[:40],
+            s.get("title", "")[:50],
+            s.get("time_budget", ""),
+            "[green]yes[/green]" if s.get("has_report") else "[dim]no[/dim]",
+            str(s.get("created_at", ""))[:19],
+        )
+    console.print(table)
+
+
+@skill_app.command("show")
+def skill_show(
+    name_or_id: str = typer.Argument(..., help="Skill slug, session ID, or prefix"),
+):
+    """Show a skill spec by name or session ID."""
+    storage = _get_storage()
+    session_id = _resolve_skill_session(storage, name_or_id)
+    skill = asyncio.run(storage.load_skill(session_id))
+
+    console.print(Panel(
+        f"[bold]{skill.title}[/bold]\n"
+        f"Slug: [cyan]{skill.slug}[/cyan] | Session: {session_id[:12]}...\n"
+        f"Task: {skill.task_type.value} | Budget: {skill.time_budget.value}\n"
+        f"Created: {skill.created_at}",
+        title="Skill Spec",
+        border_style="blue",
+    ))
+
+    if skill.subquestions:
+        console.print("\n[bold]Subquestions:[/bold]")
+        for i, sq in enumerate(skill.subquestions, 1):
+            console.print(f"  {i}. {sq}")
+
+    if skill.target_entities:
+        console.print(f"\n[bold]Target Entities:[/bold] {', '.join(skill.target_entities[:20])}")
+
+    if skill.search_strategy.queries:
+        console.print("\n[bold]Search Queries:[/bold]")
+        for q in skill.search_strategy.queries[:10]:
+            console.print(f"  - {q}")
+
+    console.print(f"\n[bold]Policies:[/bold]")
+    console.print(f"  Sources: min={skill.source_policy.min_sources}, diverse={skill.source_policy.require_diversity}")
+    console.print(f"  Verification: strictness={skill.verification_policy.strictness}")
+    console.print(f"  Synthesis: style={skill.synthesis_policy.style}, max_findings={skill.synthesis_policy.max_findings}")
+    console.print(f"  Tools: {', '.join(t.value for t in skill.tool_permissions)}")
+
+
 @skill_app.command("inspect")
 def skill_inspect(
-    session_id: str = typer.Argument(..., help="Session ID"),
+    name_or_id: str = typer.Argument(..., help="Skill slug, session ID, or prefix"),
 ):
-    """Show the generated skill spec for a session."""
+    """Show the raw JSON skill spec for a session."""
     storage = _get_storage()
+    session_id = _resolve_skill_session(storage, name_or_id)
     skill = asyncio.run(storage.load_skill(session_id))
-    if not skill:
-        console.print(f"[red]No skill found for session {session_id}[/red]")
-        raise typer.Exit(1)
 
     console.print_json(json.dumps(skill.model_dump(mode="json"), indent=2, default=str))
 
 
 @skill_app.command("export")
 def skill_export(
-    session_id: str = typer.Argument(..., help="Session ID"),
+    name_or_id: str = typer.Argument(..., help="Skill slug, session ID, or prefix"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Output file path"),
     format: str = typer.Option("json", "--format", "-f", help="Export format: json, yaml, markdown"),
 ):
     """Export a generated skill spec."""
     storage = _get_storage()
+    session_id = _resolve_skill_session(storage, name_or_id)
     skill = asyncio.run(storage.load_skill(session_id))
-    if not skill:
-        console.print(f"[red]No skill found for session {session_id}[/red]")
-        raise typer.Exit(1)
 
     if format == "markdown":
         data = export_skill_markdown(skill)
@@ -477,6 +559,136 @@ def skill_export(
         console.print(data)
 
 
+@skill_app.command("edit")
+def skill_edit(
+    name_or_id: str = typer.Argument(..., help="Skill slug, session ID, or prefix"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output YAML file path"),
+):
+    """Export a skill as editable YAML for modification."""
+    storage = _get_storage()
+    session_id = _resolve_skill_session(storage, name_or_id)
+    skill = asyncio.run(storage.load_skill(session_id))
+
+    data = export_skill_yaml(skill)
+    out_path = output or f"{skill.slug}.yaml"
+    Path(out_path).write_text(data)
+    console.print(f"[green]Skill exported to {out_path}[/green]")
+    console.print(f"[dim]Edit the file, then run: nrh skill import {out_path} --budget 5m[/dim]")
+
+
+@skill_app.command("run")
+def skill_run(
+    name_or_id: str = typer.Argument(..., help="Skill slug, session ID, or prefix"),
+    budget: Optional[str] = typer.Option(None, "--budget", "-b", help="Override time budget"),
+    format: str = typer.Option("full_report", "--format", "-f", help="Report format"),
+    mock: bool = typer.Option(False, "--mock", help="Use mock Nimble provider"),
+):
+    """Re-run a previously generated skill (optionally with a different budget)."""
+    storage = _get_storage()
+    session_id = _resolve_skill_session(storage, name_or_id)
+    skill = asyncio.run(storage.load_skill(session_id))
+
+    time_budget = TimeBudget(budget) if budget else skill.time_budget
+
+    request = UserResearchRequest(
+        user_query=skill.user_objective,
+        time_budget=time_budget,
+        preferred_format=ReportFormat(format),
+    )
+
+    provider = MockNimbleProvider() if mock else _get_provider()
+
+    console.print(Panel(
+        f"[bold]Re-running skill:[/bold] {skill.title}\n"
+        f"Slug: [cyan]{skill.slug}[/cyan]\n"
+        f"Budget: {time_budget.label} | Format: {format}\n"
+        f"Subquestions: {len(skill.subquestions)} | Entities: {len(skill.target_entities)}",
+        title="Skill Re-Run",
+        border_style="green",
+    ))
+
+    async def _run():
+        summary = await run_research(
+            request=request,
+            provider=provider,
+            storage=storage,
+            skill_override=skill,
+        )
+        return summary
+
+    summary = asyncio.run(_run())
+    console.print(format_summary(summary))
+
+    # Show report
+    report = asyncio.run(storage.load_report(str(summary.session_id)))
+    if report:
+        console.print(format_report(report))
+
+
+@skill_app.command("import")
+def skill_import_cmd(
+    file: str = typer.Argument(..., help="Path to YAML or JSON skill file"),
+    budget: Optional[str] = typer.Option(None, "--budget", "-b", help="Time budget"),
+    format: str = typer.Option("full_report", "--format", "-f", help="Report format"),
+    mock: bool = typer.Option(False, "--mock", help="Use mock Nimble provider"),
+):
+    """Import and run a skill from a YAML/JSON file."""
+    import uuid as _uuid
+
+    import yaml
+
+    from .models.skill import DynamicSkillSpec
+
+    path = Path(file)
+    if not path.exists():
+        console.print(f"[red]File not found: {file}[/red]")
+        raise typer.Exit(1)
+
+    raw = path.read_text()
+    if file.endswith((".yaml", ".yml")):
+        data = yaml.safe_load(raw)
+    else:
+        data = json.loads(raw)
+
+    # Assign new IDs
+    data["session_id"] = str(_uuid.uuid4())
+    data["skill_id"] = str(_uuid.uuid4())
+
+    skill = DynamicSkillSpec(**data)
+    time_budget = TimeBudget(budget) if budget else skill.time_budget
+
+    request = UserResearchRequest(
+        user_query=skill.user_objective,
+        time_budget=time_budget,
+        preferred_format=ReportFormat(format),
+    )
+
+    provider = MockNimbleProvider() if mock else _get_provider()
+    storage = _get_storage()
+
+    console.print(Panel(
+        f"[bold]Imported skill:[/bold] {skill.title}\n"
+        f"Budget: {time_budget.label} | Format: {format}",
+        title="Skill Import & Run",
+        border_style="green",
+    ))
+
+    async def _run():
+        return await run_research(
+            request=request,
+            provider=provider,
+            storage=storage,
+            skill_override=skill,
+        )
+
+    summary = asyncio.run(_run())
+    console.print(format_summary(summary))
+
+    report = asyncio.run(storage.load_report(str(summary.session_id)))
+    if report:
+        console.print(format_report(report))
+
+
 @session_app.command("list")
 def session_list():
     """List all research sessions."""
@@ -488,7 +700,8 @@ def session_list():
         return
 
     table = Table(title="Research Sessions")
-    table.add_column("Session ID", max_width=36)
+    table.add_column("Skill Name", style="cyan", max_width=30)
+    table.add_column("Session ID", max_width=14)
     table.add_column("Query", max_width=40)
     table.add_column("Budget")
     table.add_column("Report")
@@ -496,10 +709,11 @@ def session_list():
 
     for s in sessions:
         table.add_row(
+            s.get("slug", "")[:30] or "[dim]-[/dim]",
             s["session_id"][:12] + "...",
             s["user_query"][:40],
             s.get("time_budget", ""),
-            "yes" if s.get("has_report") else "no",
+            "[green]yes[/green]" if s.get("has_report") else "[dim]no[/dim]",
             str(s.get("created_at", ""))[:19],
         )
     console.print(table)
@@ -842,28 +1056,32 @@ def browsecomp_list(
 @app.command("deep-research")
 def deep_research_cmd(
     question: str = typer.Argument(..., help="Question to research (multi-hop)"),
-    max_hops: int = typer.Option(5, "--hops", help="Maximum search-refine iterations"),
-    timeout: int = typer.Option(540, "--timeout", "-t", help="Wall-clock timeout in seconds"),
+    timeout: int = typer.Option(1740, "--timeout", "-t", help="Wall-clock timeout in seconds"),
+    max_turns: int = typer.Option(50, "--max-turns", help="Maximum tool call turns"),
     mock: bool = typer.Option(False, "--mock", help="Use mock provider"),
 ):
-    """Run deep multi-hop research on a single question (BrowseComp-style)."""
-    from .deepresearch.engine import deep_research
+    """Run agentic deep research on a single question (BrowseComp-style).
+
+    Uses Claude Opus with direct tool access for multi-hop reasoning.
+    Default timeout: 29 minutes (for 30m budget with margin).
+    """
+    from .deepresearch.agentic import agentic_research
 
     provider = MockNimbleProvider() if mock else _get_provider()
 
     console.print(Panel(
         f"[bold]{question[:100]}[/bold]\n\n"
-        f"Max hops: {max_hops} | Timeout: {timeout}s",
-        title="Deep Research",
+        f"Model: Claude Opus 4.6 | Max turns: {max_turns} | Timeout: {timeout}s",
+        title="Deep Research (Agentic)",
         border_style="magenta",
     ))
 
     async def _run():
-        return await deep_research(
+        return await agentic_research(
             question=question,
             provider=provider,
-            max_hops=max_hops,
             timeout_seconds=timeout,
+            max_turns=max_turns,
         )
 
     session = asyncio.run(_run())

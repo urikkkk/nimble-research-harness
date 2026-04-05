@@ -73,9 +73,10 @@ def build_registry(provider: NimbleProvider) -> ToolRegistry:
         query_terms = set(params.get("query", "").lower().split())
 
         for r in resp.results:
-            content = r.snippet or r.content or ""
-            # Skip short/empty search results — they're noise
-            if r.url and len(content.strip()) >= _MIN_CONTENT_LENGTH:
+            # Prefer full content over snippet — deep search returns content but may have short/empty snippet
+            content = r.content or r.snippet or ""
+            # Save evidence if content is substantive OR if we at least have a titled URL
+            if r.url and (len(content.strip()) >= _MIN_CONTENT_LENGTH or (r.title and len(r.title) > 10)):
                 position_score = max(0.3, 1.0 - r.position * 0.1)
                 title_terms = set((r.title or "").lower().split())
                 overlap = len(query_terms & title_terms) / max(len(query_terms), 1)
