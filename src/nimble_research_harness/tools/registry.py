@@ -39,6 +39,7 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, ToolDefinition] = {}
+        self._consecutive_errors: dict[str, int] = {}
 
     def register(self, tool: ToolDefinition) -> None:
         self._tools[tool.name] = tool
@@ -59,12 +60,16 @@ class ToolRegistry:
     async def dispatch(self, name: str, input_data: dict[str, Any]) -> dict[str, Any]:
         tool = self._tools.get(name)
         if not tool:
-            return {"error": f"Unknown tool: {name}"}
+            return {"error": f"Unknown tool: {name}", "_fatal": True}
         try:
-            return await tool.handler(input_data)
+            result = await tool.handler(input_data)
+            self._consecutive_errors.pop(name, None)
+            return result
         except Exception as e:
-            logger.error("tool_dispatch_error", tool=name, error=str(e))
-            return {"error": str(e)}
+            self._consecutive_errors[name] = self._consecutive_errors.get(name, 0) + 1
+            count = self._consecutive_errors[name]
+            logger.error("tool_dispatch_error", tool=name, error=str(e), consecutive=count)
+            return {"error": str(e), "_consecutive_failures": count}
 
     @property
     def tool_names(self) -> list[str]:

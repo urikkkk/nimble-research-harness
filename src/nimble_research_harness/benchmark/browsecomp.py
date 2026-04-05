@@ -297,18 +297,15 @@ async def run_browsecomp(
 
             try:
                 if mode == "deep":
-                    # Deep research mode: multi-hop constraint-driven search
-                    from ..deepresearch.engine import deep_research
+                    # Deep research mode: full agentic Opus loop
+                    from ..deepresearch.agentic import agentic_research
 
                     timeout = budget.seconds - 60  # Leave margin
-                    dr_session = await deep_research(
+                    dr_session = await agentic_research(
                         question=q["question"],
                         provider=provider,
-                        max_hops=5,
-                        max_queries_per_hop=6,
-                        max_parallel=4,
-                        extract_top_n=3,
                         timeout_seconds=max(120, timeout),
+                        max_turns=50,
                     )
                     result.elapsed_seconds = dr_session.elapsed_seconds
                     result.total_evidence = len([f for h in dr_session.hops for f in h.findings])

@@ -76,11 +76,16 @@ async def run_agent_loop(
                     input_keys=list(block.input.keys()) if isinstance(block.input, dict) else [],
                 )
                 result = await registry.dispatch(block.name, block.input)
+                raw = json.dumps(result, default=str)
+                if len(raw) > 4000:
+                    content = raw[:3900] + "\n...[truncated]"
+                else:
+                    content = raw
                 tool_results.append(
                     {
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": json.dumps(result, default=str)[:8000],
+                        "content": content,
                     }
                 )
 

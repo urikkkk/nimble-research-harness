@@ -27,8 +27,12 @@ def _normalize_step_params(tool_name: str, params: dict[str, Any]) -> dict[str, 
         params["query"] = params["query"][0] if params["query"] else ""
     if isinstance(params.get("url"), list):
         params["url"] = params["url"][0] if params["url"] else ""
-    if tool_name == "nimble_search" and params.get("focus") not in _VALID_FOCUS:
-        params["focus"] = "general"
+    if tool_name == "nimble_search":
+        if params.get("focus") not in _VALID_FOCUS:
+            params["focus"] = "general"
+        # Force lite search depth — deep mode wastes 24-54s per call vs 1-3s for lite.
+        # Deep content extraction should use nimble_extract on specific URLs instead.
+        params["search_depth"] = "lite"
     return params
 
 
