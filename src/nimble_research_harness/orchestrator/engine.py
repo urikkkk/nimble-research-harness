@@ -144,7 +144,7 @@ async def run_research(
 
     async def _run_pipeline() -> SessionSummary:
         """Inner pipeline — wrapped by global watchdog timeout."""
-        nonlocal wsa_matches  # noqa: allow mutation from inner scope
+        nonlocal wsa_matches, config  # noqa: allow mutation from inner scope
 
         # --- Stage 0b: Initial Discovery ---
         monitor.set_stage(ExecutionStage.DISCOVERY)
